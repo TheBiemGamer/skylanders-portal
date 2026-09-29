@@ -40,3 +40,23 @@ if(SKYLANDERS_PORTAL_TESTS)
         add_test(NAME skylanders_${t} COMMAND skylanders_${t})
     endforeach()
 endif()
+
+# skylanders_portal_rex: ReXGlue glue (settings, XAM handler, F6 overlay, USB portal, audio).
+# Only built when the including project provides the rex::runtime target.
+if(TARGET rex::runtime)
+    if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/thirdparty/hidapi/CMakeLists.txt")
+        message(FATAL_ERROR "skylanders-portal: thirdparty/hidapi missing; run git submodule update --init --recursive")
+    endif()
+    set(HIDAPI_WITH_TESTS OFF CACHE BOOL "" FORCE)
+    set(BUILD_SHARED_LIBS OFF)
+    add_subdirectory(thirdparty/hidapi)
+
+    add_library(skylanders_portal_rex STATIC
+        src/portal_rex/portal_rex.cpp
+        src/portal_rex/portal_overlay_dialog.cpp
+        src/portal/usb/usb_portal.cpp
+    )
+    target_include_directories(skylanders_portal_rex PUBLIC src)
+    target_include_directories(skylanders_portal_rex PRIVATE "${REXSDK_DIR}/thirdparty/imgui")
+    target_link_libraries(skylanders_portal_rex PUBLIC skylanders_portal_core rex::runtime hidapi::hidapi)
+endif()

@@ -1,0 +1,82 @@
+#pragma once
+
+#include <filesystem>
+#include <optional>
+#include <string>
+
+#include <rex/cvar.h>
+
+#include "portal/figure_catalog.h"  // for portal::SkylanderInfo
+#include "portal/usb/usb_portal.h"  // for portal::FigureData
+
+namespace rex::ui {
+class ImGuiDrawer;
+}  // namespace rex::ui
+
+namespace skylanders::portal {
+class SoftwarePortal;
+class UsbPortal;
+}  // namespace skylanders::portal
+
+// So other translation units (the overlay) can read the folder the figure picker searches.
+REXCVAR_DECLARE(std::string, portal_figures_dir);
+
+// So the overlay can distinguish "portal_mode is usb but no device was found" from "portal_mode
+// isn't usb at all" -- both show GetUsbPortal() == nullptr, and those need different messages.
+REXCVAR_DECLARE(std::string, portal_mode);
+
+namespace skylanders {
+
+// Creates the portal selected by the `portal_mode` cvar and routes the game's portal reads and
+// writes to it. With no portal (mode `none` or an unknown value) the game keeps its own path and
+// shows "Can't find the Portal of Power". The portal lives for the whole process, because game
+// threads may still call into it while the app shuts down.
+//
+// If the `portal_figures_dir` cvar is empty, it is set to `default_figures_dir` (which is created
+// if it doesn't exist yet) so the overlay has somewhere to look without the user passing a flag.
+void InstallPortal(const std::filesystem::path& default_figures_dir);
+
+// Loads the figure at `path` and places it in `slot`; future writes to that slot save back to
+// `path`, replacing any earlier file that slot saved to. Returns false, and changes nothing, if
+// there is no active software portal or `path` cannot be loaded as a figure.
+bool PlaceFigureFromFile(int slot, const std::filesystem::path& path);
+
+// Removes the figure from `slot`, if any, and forgets what file it was saving to. Returns false if
+// there is no active software portal or the slot was already empty.
+bool RemoveFigureFromSlot(int slot);
+
+// Creates a new blank figure for `sky` under portal_figures_dir/<game>/<name>.dump (creating the
+// game subfolder if needed; an existing file of that name is never overwritten -- a " (2)", " (3)"
+// suffix is added instead), then places it into `slot` exactly like PlaceFigureFromFile. Returns
+// false, and creates nothing, if there is no active software portal, portal_figures_dir is unset,
+// or the folder can't be created.
+bool CreateAndPlaceFigure(int slot, const portal::SkylanderInfo& sky);
+
+// The active software portal, for read-only status queries (HasFigure/Figure) from the overlay.
+// nullptr if portal_mode is not "software".
+portal::SoftwarePortal* GetSoftwarePortal();
+
+// The active USB portal, for read-only status queries (FigurePresent/DetectedIdVariant) from the
+// overlay. nullptr if portal_mode is not "usb" or no device was found.
+portal::UsbPortal* GetUsbPortal();
+
+// Best-effort figure data for a real figure in `slot`, assembled passively from whatever the
+// game's own portal polling has already read (see UsbPortal::CachedFigureData) -- never an
+// active read, cheap enough to call every frame. Returns nullopt if there's no active USB
+// portal, no figure in `slot`, or not enough of it has been observed yet.
+std::optional<portal::FigureData> ReadRealFigureBlocks(int slot);
+
+// Dumps the real figure in `slot` (see UsbPortal::DumpFigure -- the game briefly sees that slot
+// as empty while this runs) and saves it under portal_figures_dir, grouped by game and named
+// like CreateAndPlaceFigure's own figures ("<name>.dump", " (2).dump" on collision; an
+// unrecognized id/variant falls back to "Unknown id<N> variant<N>" at the folder root). On
+// success, `saved_path` (if given) is set to where it was written. Returns false -- with a
+// reason in `error`, if given -- if there's no active USB portal, portal_figures_dir is unset,
+// the dump itself fails, or the file can't be saved.
+bool DumpRealFigureToFile(int slot, std::filesystem::path* saved_path = nullptr,
+                          std::string* error = nullptr);
+
+// Binds F6 to toggle the portal figure picker overlay. Call from ReXApp::OnCreateDialogs.
+void RegisterPortalOverlay(rex::ui::ImGuiDrawer* drawer);
+
+}  // namespace skylanders
