@@ -72,6 +72,12 @@ class XamPortalHandler final : public rex::kernel::xam::NonControllerHandler {
       REXLOG_DEBUG("Portal write: {:02x} {:02x} {:02x}", buffer[2],
                    buffer.size() > 3 ? buffer[3] : 0, buffer.size() > 4 ? buffer[4] : 0);
     }
+    // With clean PCM from a game hook, the software portal plays that instead of the encoded
+    // speaker stream (0B 17).
+    if (buffer.size() > 2 && buffer[0] == 0x0B && buffer[1] == 0x17 && g_speaker_pcm_tap.load() &&
+        g_software_portal.load()) {
+      return skylanders::portal::kXamSuccess;
+    }
     return bridge_.Write(g_portal.load(), buffer);
   }
 
@@ -80,7 +86,10 @@ class XamPortalHandler final : public rex::kernel::xam::NonControllerHandler {
   skylanders::portal::XamBridge bridge_;
 };
 
-XamPortalHandler g_xam_handler;  // lives for the whole process, like the portals themselves
+XamPortalHandler g_xam_handler;
+
+// Set once a game hook has sent clean speaker PCM (SubmitSpeakerPcm).
+std::atomic<bool> g_speaker_pcm_tap{false};  // lives for the whole process, like the portals themselves
 
 // portal_figure/portal_figures_dir arrive as UTF-8; convert explicitly so non-ANSI characters
 // survive (path::string() would throw for characters outside the ANSI code page).
@@ -462,6 +471,11 @@ bool DumpRealFigureToFile(int slot, std::filesystem::path* saved_path, std::stri
 }  // namespace skylanders
 
 namespace skylanders {
+
+void SubmitSpeakerPcm(std::span<const int16_t> pcm) {
+  g_speaker_pcm_tap.store(true);
+  if (portal::SoftwarePortal* software = g_software_portal.load()) software->WriteAudio(pcm);
+}
 
 void RegisterPortalOverlay(rex::ui::ImGuiDrawer* drawer) {
   static std::unique_ptr<PortalOverlayDialog> overlay;  // UI thread only

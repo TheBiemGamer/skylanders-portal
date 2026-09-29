@@ -2,6 +2,7 @@
 
 #include <filesystem>
 #include <optional>
+#include <span>
 #include <string>
 
 #include <rex/cvar.h>
@@ -80,6 +81,12 @@ std::optional<portal::FigureData> ReadRealFigureBlocks(int slot);
 // the dump itself fails, or the file can't be saved.
 bool DumpRealFigureToFile(int slot, std::filesystem::path* saved_path = nullptr,
                           std::string* error = nullptr);
+
+// For a game-specific hook that has the portal speaker audio before the game encodes it (8 kHz
+// mono PCM): the software portal then plays these samples, which sound cleaner than decoding the
+// encoded stream (G.726 adds noise). Once called, the encoded stream is no longer played in
+// software mode; a real USB portal keeps getting the encoded stream either way.
+void SubmitSpeakerPcm(std::span<const int16_t> pcm);
 
 // Binds F6 to toggle the portal figure picker overlay. Call from ReXApp::OnCreateDialogs.
 void RegisterPortalOverlay(rex::ui::ImGuiDrawer* drawer);
