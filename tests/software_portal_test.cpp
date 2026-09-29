@@ -65,13 +65,12 @@ int main() {
     CHECK(p.Read()[0] == 0x53);  // then status
   }
 
-  // Status ('S'), LED commands ('C', 'J', 'L') and unknown bytes queue no reply and do not crash.
+  // Status ('S'), LED commands ('C', 'L') and unknown bytes queue no reply and do not crash.
   {
     SoftwarePortal p;
     p.Write(Cmd({'S'}));
     p.Write(Cmd({'V'}));
     p.Write(Cmd({'C', 0xE8, 0x10, 0x00}));
-    p.Write(Cmd({'J', 0x01, 0xFF, 0x00, 0x00}));
     p.Write(Cmd({'L', 0x02, 0x00, 0xFF, 0x00}));
     p.Write(Cmd({0x00}));
     p.Write(Cmd({0xFF, 0xFF, 0xFF}));
@@ -410,6 +409,40 @@ int main() {
     p.PlaceFigure(3, pattern(), path_a);
     p.RemoveFigure(3);
     CHECK(!p.Source(3).has_value());  // removed: forgotten, not just the figure
+  }
+
+  // 'J' (Trap Team portal sync) is answered with a 4A report; 'L' (side lights) gets none.
+  {
+    SoftwarePortal portal;
+    portal.Write(Cmd({'J'}));
+    CHECK(portal.Read()[0] == 0x4A);
+    portal.Write(Cmd({'L'}));
+    CHECK(portal.Read()[0] == 0x53);  // no queued reply: status frame
+  }
+
+  // 'M' without an audio sink: version 00 19 (no audio). With a sink: audio-capable version.
+  {
+    struct Sink : PortalAudioSink {
+      std::vector<int16_t> got;
+      void Submit(std::span<const int16_t> s) override { got.insert(got.end(), s.begin(), s.end()); }
+    } sink;
+    SoftwarePortal portal;
+    portal.Write(Cmd({'M', 0x01}));
+    Report r = portal.Read();
+    CHECK(r[0] == 0x4D && r[1] == 0x01 && r[2] == 0x00 && r[3] == 0x19);
+    portal.SetAudioSink(&sink);
+    portal.Write(Cmd({'M', 0x01}));
+    r = portal.Read();
+    CHECK(r[0] == 0x4D && r[1] == 0x01 && r[2] == kAudioCapableVersion[0] &&
+          r[3] == kAudioCapableVersion[1]);
+    // Audio reaches the sink as 32 samples.
+    AudioPacket p{};
+    portal.WriteAudio(p);
+    CHECK(sink.got.size() == 32);
+    // No sink: audio is dropped without error.
+    portal.SetAudioSink(nullptr);
+    portal.WriteAudio(p);
+    CHECK(sink.got.size() == 32);
   }
 
   return Finish("software_portal");

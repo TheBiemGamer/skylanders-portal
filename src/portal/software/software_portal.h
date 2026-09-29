@@ -1,6 +1,7 @@
 #pragma once
 
 #include <array>
+#include <atomic>
 #include <cstdint>
 #include <deque>
 #include <filesystem>
@@ -18,6 +19,12 @@ class SoftwarePortal : public PortalDevice {
  public:
   void Write(const Report& report) override;
   Report Read() override;
+  // Decodes the packet and passes it to the audio sink, if any.
+  void WriteAudio(const AudioPacket& packet) override;
+
+  // Where speaker audio goes; nullptr drops it (and 'M' then reports no speaker). Not owned.
+  // Thread-safe.
+  void SetAudioSink(PortalAudioSink* sink);
 
   // Control API. Thread-safe.
   //
@@ -66,6 +73,7 @@ class SoftwarePortal : public PortalDevice {
 
   Report StatusReportLocked();
 
+  std::atomic<PortalAudioSink*> audio_sink_{nullptr};
   mutable std::mutex mu_;
   std::deque<Report> replies_;
   std::array<Slot, kMaxFigures> slots_{};

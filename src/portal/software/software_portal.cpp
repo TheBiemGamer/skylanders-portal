@@ -54,8 +54,15 @@ void SoftwarePortal::Write(const Report& in) {
         replies_.push_back(MakeReport({0x41, in[1], 0xFF, 0x77}));
         break;
       }
-      case 'M':  // version
-        replies_.push_back(MakeReport({0x4D, in[1], 0x00, 0x19}));
+      case 'M': {  // audio firmware version: says whether the portal has a speaker
+        PortalAudioSink* sink = audio_sink_.load();
+        replies_.push_back(sink ? MakeReport({0x4D, in[1], kAudioCapableVersion[0],
+                                              kAudioCapableVersion[1]})
+                                : MakeReport({0x4D, in[1], 0x00, 0x19}));
+        break;
+      }
+      case 'J':  // Trap Team portal sync: acknowledged with a bare 4A report
+        replies_.push_back(MakeReport({0x4A}));
         break;
       case 'Q': {  // read one block of a figure
         const uint8_t slot = in[1] & 0x0F;
@@ -89,7 +96,7 @@ void SoftwarePortal::Write(const Report& in) {
         break;
       }
       default:
-        // 'S' and 'V' (status is answered by idle reads), the LED commands 'C', 'J' and 'L', and
+        // 'S' and 'V' (status is answered by idle reads), the LED commands 'C' and 'L', and
         // anything unknown: no reply.
         break;
     }
@@ -191,6 +198,15 @@ std::optional<std::filesystem::path> SoftwarePortal::Source(int slot) const {
   std::lock_guard<std::mutex> lock(mu_);
   if (!slots_[slot].present) return std::nullopt;
   return slots_[slot].source;
+}
+
+void SoftwarePortal::SetAudioSink(PortalAudioSink* sink) { audio_sink_.store(sink); }
+
+void SoftwarePortal::WriteAudio(const AudioPacket& packet) {
+  PortalAudioSink* sink = audio_sink_.load();
+  if (!sink) return;
+  const auto samples = SamplesFromAudioPacket(packet, kPortalAudioFormat);
+  sink->Submit(samples);
 }
 
 }  // namespace skylanders::portal

@@ -12,6 +12,7 @@ if(NOT REXSDK_DIR)
 endif()
 
 add_library(skylanders_portal_core STATIC
+    src/portal/audio.cpp
     src/portal/figure_catalog.cpp
     src/portal/figure_file.cpp
     src/portal/figure_stats.cpp
@@ -31,7 +32,7 @@ option(SKYLANDERS_PORTAL_TESTS "Build skylanders-portal unit tests" ON)
 if(SKYLANDERS_PORTAL_TESTS)
     enable_testing()
     foreach(t portal_framing_test portal_mode_test software_portal_test figure_file_test
-              figure_catalog_test figure_stats_test)
+              figure_catalog_test figure_stats_test audio_test)
         add_executable(skylanders_${t} tests/${t}.cpp)
         target_include_directories(skylanders_${t} PRIVATE tests)
         target_link_libraries(skylanders_${t} PRIVATE skylanders_portal_core)
