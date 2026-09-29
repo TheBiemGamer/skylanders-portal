@@ -33,6 +33,11 @@ def release_order(g):
 by_key = defaultdict(list)
 for g in games:
     for f in g.rglob("*.dump"):
+        # A trap holding a villain has the same id/variant as the empty crystal trap of that shape
+        # (the villain lives in its save data), so villain dumps would mislabel the trap. Villains
+        # come from portal/trap_villain.cpp instead.
+        if "Trappable Villain" in str(f):
+            continue
         data = f.read_bytes()
         sky_id = struct.unpack_from("<H", data, 0x10)[0]
         variant = struct.unpack_from("<H", data, 0x1C)[0]

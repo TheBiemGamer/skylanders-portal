@@ -5,56 +5,19 @@
 #include <cstring>
 #include <string_view>
 
-extern "C" {
-#include <aes.h>
-}
-
-// md5.h's own prototypes use a K&R-compatibility macro (__P) that collapses to an empty
-// parameter list under C++ compilation, so its declaration of this function doesn't match its
-// actual (C-linkage) definition -- declared directly here instead of including that header.
-extern "C" void* md5_buffer(const char* buffer, size_t len, void* resblock);
+#include "portal/figure_crypto.h"
 
 namespace skylanders::portal {
 
 namespace {
 
-uint16_t Crc16CcittFalse(const uint8_t* data, size_t size) {
-  uint16_t crc = 0xFFFF;
-  for (size_t i = 0; i < size; ++i) {
-    crc ^= static_cast<uint16_t>(data[i]) << 8;
-    for (int bit = 0; bit < 8; ++bit) {
-      crc = (crc & 0x8000) ? static_cast<uint16_t>((crc << 1) ^ 0x1021)
-                            : static_cast<uint16_t>(crc << 1);
-    }
-  }
-  return crc;
-}
+using Block = FigureBlock;
 
-// Verified against real dumps in this project (see figure_stats.h) against the community
-// reverse-engineering this is sourced from: the trailing space here is easy to drop by accident,
-// and dropping it silently produces a wrong key with no compile-time or obvious runtime signal.
-constexpr std::string_view kKeyConstant = " Copyright (C) 2010 Activision. All Rights Reserved. ";
-
-using Block = std::array<uint8_t, kBlockSize>;
-
-// Decrypts one 16-byte block in place. Each block has its own key: MD5 of the tag's first 0x20
-// bytes + this block's own index + the constant above.
 Block DecryptBlock(const FigureData& data, uint8_t block_index) {
-  std::array<uint8_t, 0x20 + 1 + kKeyConstant.size()> key_material{};
-  std::memcpy(key_material.data(), data.data(), 0x20);
-  key_material[0x20] = block_index;
-  std::memcpy(key_material.data() + 0x21, kKeyConstant.data(), kKeyConstant.size());
-
-  std::array<uint8_t, 16> key{};
-  md5_buffer(reinterpret_cast<const char*>(key_material.data()), key_material.size(), key.data());
-
-  std::array<uint8_t, AES_ROUND_KEY_SIZE> round_keys{};
-  aes_key_schedule_128(key.data(), round_keys.data());
-
-  Block out{};
-  aes_decrypt_128(round_keys.data(), data.data() + block_index * kBlockSize, out.data());
-  return out;
+  return DecryptFigureBlock(data, block_index);
 }
+
+uint16_t Crc16CcittFalse(const uint8_t* data, size_t size) { return FigureCrc16(data, size); }
 
 uint16_t ReadU16LE(const uint8_t* p) {
   return static_cast<uint16_t>(p[0]) | (static_cast<uint16_t>(p[1]) << 8);

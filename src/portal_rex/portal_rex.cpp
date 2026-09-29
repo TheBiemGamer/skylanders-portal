@@ -394,6 +394,30 @@ bool CreateAndPlaceFigure(int slot, const portal::SkylanderInfo& sky) {
   return PlaceFigureFromFile(slot, path);
 }
 
+bool CreateAndPlaceVillainTrap(int slot, const portal::TrapVillain& villain) {
+  portal::SoftwarePortal* software = g_software_portal.load();
+  if (!software) return false;
+  const std::string dir_utf8 = REXCVAR_GET(portal_figures_dir);
+  if (dir_utf8.empty()) return false;
+
+  const uint16_t trap_variant = portal::DefaultTrapVariant(villain.trap_id);
+  if (!trap_variant) return false;
+  const auto data = portal::CreateTrapWithVillain(villain.trap_id, trap_variant, villain);
+  if (!data) return false;
+
+  const std::filesystem::path game_dir = Utf8ToPath(dir_utf8) / "Trap Team";
+  std::error_code ec;
+  std::filesystem::create_directories(game_dir, ec);
+  if (ec) return false;
+
+  const auto* trap = portal::FindSkylander(villain.trap_id, trap_variant);
+  const std::string name = std::string(villain.name) +
+                           (trap ? " (" + std::string(trap->name) + ")" : std::string());
+  const std::filesystem::path path = portal::UniqueFigurePath(game_dir, name);
+  if (!portal::SaveFigureFileAtomic(path, *data)) return false;
+  return PlaceFigureFromFile(slot, path);
+}
+
 portal::SoftwarePortal* GetSoftwarePortal() { return g_software_portal.load(); }
 
 portal::UsbPortal* GetUsbPortal() { return g_usb_portal.load(); }

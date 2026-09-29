@@ -16,6 +16,7 @@
 #include "portal/figure_stats.h"
 #include "portal/portal_mode.h"
 #include "portal/software/software_portal.h"
+#include "portal/trap_villain.h"
 #include "portal/usb/usb_portal.h"
 #include "portal_rex/utf8_path.h"
 
@@ -201,7 +202,9 @@ void PortalOverlayDialog::OnDraw(ImGuiIO& io) {
     for (const auto& sky : portal::AllSkylanders()) {
       if (!filter.empty() && Lower(std::string(sky.name)).find(filter) == std::string::npos) continue;
       if (sky.game != last_game) {
-        section_open = ImGui::CollapsingHeader(sky.game.data(), ImGuiTreeNodeFlags_DefaultOpen);
+        // Collapsed by default; a filter opens every section with a match.
+        if (!filter.empty()) ImGui::SetNextItemOpen(true);
+        section_open = ImGui::CollapsingHeader(sky.game.data());
         last_game = std::string(sky.game);
       }
       if (!section_open) continue;
@@ -211,6 +214,31 @@ void PortalOverlayDialog::OnDraw(ImGuiIO& io) {
       if (ImGui::Button("Create")) {
         if (!CreateAndPlaceFigure(selected_slot_, sky)) {
           REXLOG_WARN("Portal overlay: could not create '{}'", sky.name);
+        } else {
+          Rescan();
+          creating_ = false;
+        }
+      }
+      ImGui::PopID();
+    }
+    // Traps with a villain already inside. A villain trap has the same figure id/variant as the
+    // empty trap (the villain is in its save data), so these come from their own list.
+    bool villains_header = false;
+    bool villains_open = false;
+    for (const auto& villain : portal::AllTrapVillains()) {
+      if (!filter.empty() && Lower(std::string(villain.name)).find(filter) == std::string::npos) continue;
+      if (!villains_header) {
+        if (!filter.empty()) ImGui::SetNextItemOpen(true);
+        villains_open = ImGui::CollapsingHeader("Trap Team villains (in a trap)");
+        villains_header = true;
+      }
+      if (!villains_open) break;
+      ImGui::PushID(1000000 + villain.id * 2 + (villain.variant ? 1 : 0));
+      ImGui::TextUnformatted(std::string(villain.name).c_str());
+      ImGui::SameLine(ImGui::GetWindowWidth() - 80);
+      if (ImGui::Button("Create")) {
+        if (!CreateAndPlaceVillainTrap(selected_slot_, villain)) {
+          REXLOG_WARN("Portal overlay: could not create a trap holding '{}'", villain.name);
         } else {
           Rescan();
           creating_ = false;
@@ -262,12 +290,13 @@ void PortalOverlayDialog::OnDraw(ImGuiIO& io) {
     const auto& entry = entries_[i];
     if (!filter.empty() && Lower(entry.name).find(filter) == std::string::npos) continue;
     if (entry.game != last_game) {
-      section_open = ImGui::CollapsingHeader(entry.game.empty() ? "(no game folder)" : entry.game.c_str(),
-                                              ImGuiTreeNodeFlags_DefaultOpen);
+      // Collapsed by default; a filter opens every section with a match.
+      if (!filter.empty()) ImGui::SetNextItemOpen(true);
+      section_open = ImGui::CollapsingHeader(entry.game.empty() ? "(no game folder)" : entry.game.c_str());
       last_game = entry.game;
     }
     if (!section_open) continue;
-    ImGui::PushID(entry.path.string().c_str());
+    ImGui::PushID(Utf8Path(entry.path).c_str());  // path::string() throws on non-ANSI names
     ImGui::TextUnformatted(entry.display_name.c_str());
     if (entry_stats_[i]) {
       ImGui::SameLine();

@@ -7,6 +7,7 @@
 #include <rex/cvar.h>
 
 #include "portal/figure_catalog.h"  // for portal::SkylanderInfo
+#include "portal/trap_villain.h"   // for portal::TrapVillain
 #include "portal/usb/usb_portal.h"  // for portal::FigureData
 
 namespace rex::ui {
@@ -51,6 +52,10 @@ bool RemoveFigureFromSlot(int slot);
 // false, and creates nothing, if there is no active software portal, portal_figures_dir is unset,
 // or the folder can't be created.
 bool CreateAndPlaceFigure(int slot, const portal::SkylanderInfo& sky);
+
+// Like CreateAndPlaceFigure, but a Trap Team trap holding `villain`: the first crystal trap shape
+// of the villain's element, saved as "<villain> (<trap name>).dump" under the "Trap Team" folder.
+bool CreateAndPlaceVillainTrap(int slot, const portal::TrapVillain& villain);
 
 // The active software portal, for read-only status queries (HasFigure/Figure) from the overlay.
 // nullptr if portal_mode is not "software".
