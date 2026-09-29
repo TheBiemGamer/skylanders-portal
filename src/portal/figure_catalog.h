@@ -7,6 +7,8 @@
 #include <string_view>
 #include <vector>
 
+#include "portal/portal_device.h"
+
 namespace skylanders::portal {
 
 struct SkylanderInfo {
@@ -22,6 +24,10 @@ std::span<const SkylanderInfo> AllSkylanders();
 // Looks up a figure's real name/game from its id/variant. Returns nullptr if the pair isn't in
 // the built-in catalog (e.g. a homebrew or unrecognized figure).
 const SkylanderInfo* FindSkylander(uint16_t id, uint16_t variant);
+
+// The name to show for a figure: for a Trap Team trap holding a villain, the villain's name
+// ("Bad Juju"); otherwise the catalog name. Empty if the figure isn't in the catalog.
+std::string FigureDisplayName(const FigureData& data);
 
 struct FigureCatalogEntry {
   std::string name;          // filename, without extension

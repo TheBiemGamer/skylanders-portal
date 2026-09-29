@@ -408,10 +408,7 @@ bool CreateAndPlaceVillainTrap(int slot, const portal::TrapVillain& villain) {
   std::filesystem::create_directories(game_dir, ec);
   if (ec) return false;
 
-  const auto* trap = portal::FindSkylander(villain.trap_id, trap_variant);
-  const std::string name = std::string(villain.name) +
-                           (trap ? " (" + std::string(trap->name) + ")" : std::string());
-  const std::filesystem::path path = portal::UniqueFigurePath(game_dir, name);
+  const std::filesystem::path path = portal::UniqueFigurePath(game_dir, villain.name);
   if (!portal::SaveFigureFileAtomic(path, *data)) return false;
   return PlaceFigureFromFile(slot, path);
 }

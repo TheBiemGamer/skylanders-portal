@@ -3,6 +3,7 @@
 
 #include "portal/figure_catalog.h"
 #include "portal/figure_file.h"
+#include "portal/trap_villain.h"
 #include "test_util.h"
 
 namespace fs = std::filesystem;
@@ -150,6 +151,23 @@ int main() {
     const SkylanderInfo* found = FindSkylander(ReadFigureId(created), ReadFigureVariant(created));
     CHECK(found != nullptr);
     if (found) CHECK(found->name == "Bouncer");
+  }
+
+  // A trap holding a villain is shown by the villain's name; an empty trap by its trap name.
+  {
+    const TrapVillain* juju = FindTrapVillain(37, false);
+    auto villain_trap = CreateTrapWithVillain(212, 12305, *juju);
+    CHECK(villain_trap && FigureDisplayName(*villain_trap) == "Bad Juju");
+    CHECK(FigureDisplayName(CreateBlankFigure(212, 12305)) == "Air Screamer (Storm Warning)");
+    CHECK(FigureDisplayName(CreateBlankFigure(1, 0xFFFF)).empty());
+
+    fs::path dir = fs::temp_directory_path() / L"sp_catalog_villain";
+    fs::remove_all(dir);
+    fs::create_directories(dir / L"Trap Team");
+    CHECK(SaveFigureFileAtomic(dir / L"Trap Team" / L"some trap.dump", *villain_trap));
+    auto entries = ScanFigureCatalog(dir);
+    CHECK(entries.size() == 1 && entries[0].display_name == "Bad Juju");
+    fs::remove_all(dir);
   }
 
   return Finish("figure_catalog");

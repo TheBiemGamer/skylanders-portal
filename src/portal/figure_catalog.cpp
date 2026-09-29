@@ -6,6 +6,7 @@
 #include <unordered_map>
 
 #include "portal/figure_file.h"
+#include "portal/trap_villain.h"
 #include "portal/skylander_catalog_data.h"
 
 namespace skylanders::portal {
@@ -72,13 +73,23 @@ int GameReleaseRank(const std::string& game) {
 std::string ResolveDisplayName(const std::filesystem::path& path, const std::string& fallback) {
   auto data = LoadFigureFile(path);
   if (!data) return fallback;
-  if (const SkylanderInfo* sky = FindSkylander(ReadFigureId(*data), ReadFigureVariant(*data))) {
-    return std::string(sky->name);
-  }
-  return fallback;
+  std::string name = FigureDisplayName(*data);
+  return name.empty() ? fallback : name;
 }
 
 }  // namespace
+
+std::string FigureDisplayName(const FigureData& data) {
+  if (auto trap = ReadTrapVillain(data); trap && trap->villain_id != 0) {
+    if (const TrapVillain* v = FindTrapVillain(trap->villain_id, trap->variant)) {
+      return std::string(v->name);
+    }
+  }
+  if (const SkylanderInfo* sky = FindSkylander(ReadFigureId(data), ReadFigureVariant(data))) {
+    return std::string(sky->name);
+  }
+  return {};
+}
 
 std::vector<FigureCatalogEntry> ScanFigureCatalog(const std::filesystem::path& root) {
   std::vector<FigureCatalogEntry> entries;

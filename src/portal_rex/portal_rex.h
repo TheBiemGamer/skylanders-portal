@@ -54,7 +54,7 @@ bool RemoveFigureFromSlot(int slot);
 bool CreateAndPlaceFigure(int slot, const portal::SkylanderInfo& sky);
 
 // Like CreateAndPlaceFigure, but a Trap Team trap holding `villain`: the first crystal trap shape
-// of the villain's element, saved as "<villain> (<trap name>).dump" under the "Trap Team" folder.
+// of the villain's element, saved as "<villain>.dump" under the "Trap Team" folder.
 bool CreateAndPlaceVillainTrap(int slot, const portal::TrapVillain& villain);
 
 // The active software portal, for read-only status queries (HasFigure/Figure) from the overlay.

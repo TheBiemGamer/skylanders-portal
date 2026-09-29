@@ -1,6 +1,7 @@
 #include "portal_rex/portal_overlay_dialog.h"
 
 #include <algorithm>
+#include <string_view>
 #include <cctype>
 #include <filesystem>
 #include <system_error>
@@ -38,7 +39,10 @@ std::filesystem::path Utf8ToPath(const std::string& utf8) {
 // "Slot N: <figure name>" or "Slot N: empty".
 std::string SlotLabel(portal::SoftwarePortal* software, int slot) {
   std::string label = "Slot " + std::to_string(slot) + ": ";
-  if (!software->Figure(slot)) return label + "empty";
+  const auto figure = software->Figure(slot);
+  if (!figure) return label + "empty";
+  // A trap shows the villain inside it, which the file name may not say.
+  if (std::string name = portal::FigureDisplayName(*figure); !name.empty()) return label + name;
   if (auto source = software->Source(slot)) return label + Utf8Path(source->stem());
   return label + "(unnamed)";
 }
@@ -196,16 +200,51 @@ void PortalOverlayDialog::OnDraw(ImGuiIO& io) {
   if (creating_) {
     ImGui::InputTextWithHint("Filter", "Skylander name", filter_, sizeof(filter_));
     const std::string filter = Lower(filter_);
+    auto matches = [&filter](std::string_view name) {
+      return filter.empty() || Lower(std::string(name)).find(filter) != std::string::npos;
+    };
+    const auto villains = portal::AllTrapVillains();
+    const bool any_villain = std::any_of(villains.begin(), villains.end(),
+                                         [&](const auto& v) { return matches(v.name); });
+
+    // Traps with a villain already inside, under Trap Team. A villain trap has the same figure
+    // id/variant as the empty trap (the villain is in its save data), so they have their own list.
+    auto draw_villains = [&] {
+      if (!any_villain) return;
+      if (!filter.empty()) ImGui::SetNextItemOpen(true);
+      if (!ImGui::TreeNode("Villains")) return;
+      for (const auto& villain : villains) {
+        if (!matches(villain.name)) continue;
+        ImGui::PushID(1000000 + villain.id * 2 + (villain.variant ? 1 : 0));
+        ImGui::TextUnformatted(std::string(villain.name).c_str());
+        ImGui::SameLine(ImGui::GetWindowWidth() - 80);
+        if (ImGui::Button("Create")) {
+          if (!CreateAndPlaceVillainTrap(selected_slot_, villain)) {
+            REXLOG_WARN("Portal overlay: could not create a trap holding '{}'", villain.name);
+          } else {
+            Rescan();
+            creating_ = false;
+          }
+        }
+        ImGui::PopID();
+      }
+      ImGui::TreePop();
+    };
+
+    constexpr std::string_view kTrapTeam = "Trap Team";
     ImGui::BeginChild("create_list", ImVec2(0, 0), true);
     std::string last_game;
     bool section_open = false;
+    bool trap_team_shown = false;
     for (const auto& sky : portal::AllSkylanders()) {
-      if (!filter.empty() && Lower(std::string(sky.name)).find(filter) == std::string::npos) continue;
+      if (!matches(sky.name)) continue;
       if (sky.game != last_game) {
+        if (last_game == kTrapTeam && section_open) draw_villains();
         // Collapsed by default; a filter opens every section with a match.
         if (!filter.empty()) ImGui::SetNextItemOpen(true);
         section_open = ImGui::CollapsingHeader(sky.game.data());
         last_game = std::string(sky.game);
+        trap_team_shown |= sky.game == kTrapTeam;
       }
       if (!section_open) continue;
       ImGui::PushID(static_cast<int>(sky.id) * 100000 + sky.variant);
@@ -221,30 +260,12 @@ void PortalOverlayDialog::OnDraw(ImGuiIO& io) {
       }
       ImGui::PopID();
     }
-    // Traps with a villain already inside. A villain trap has the same figure id/variant as the
-    // empty trap (the villain is in its save data), so these come from their own list.
-    bool villains_header = false;
-    bool villains_open = false;
-    for (const auto& villain : portal::AllTrapVillains()) {
-      if (!filter.empty() && Lower(std::string(villain.name)).find(filter) == std::string::npos) continue;
-      if (!villains_header) {
-        if (!filter.empty()) ImGui::SetNextItemOpen(true);
-        villains_open = ImGui::CollapsingHeader("Trap Team villains (in a trap)");
-        villains_header = true;
-      }
-      if (!villains_open) break;
-      ImGui::PushID(1000000 + villain.id * 2 + (villain.variant ? 1 : 0));
-      ImGui::TextUnformatted(std::string(villain.name).c_str());
-      ImGui::SameLine(ImGui::GetWindowWidth() - 80);
-      if (ImGui::Button("Create")) {
-        if (!CreateAndPlaceVillainTrap(selected_slot_, villain)) {
-          REXLOG_WARN("Portal overlay: could not create a trap holding '{}'", villain.name);
-        } else {
-          Rescan();
-          creating_ = false;
-        }
-      }
-      ImGui::PopID();
+    if (last_game == kTrapTeam && section_open) {
+      draw_villains();
+    } else if (!trap_team_shown && any_villain) {
+      // The filter matched only villains: show them under their own Trap Team header.
+      if (!filter.empty()) ImGui::SetNextItemOpen(true);
+      if (ImGui::CollapsingHeader(kTrapTeam.data())) draw_villains();
     }
     ImGui::EndChild();
     ImGui::End();
