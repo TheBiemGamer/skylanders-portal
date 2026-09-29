@@ -16,3 +16,11 @@ inline int Finish(const char* name) {
   if (g_failures == 0) std::printf("all %s tests passed\n", name);
   return g_failures == 0 ? 0 : 1;
 }
+
+#define REQUIRE_OR_RETURN(cond)                                            \
+  do {                                                                     \
+    if (!(cond)) {                                                         \
+      std::fprintf(stderr, "FAIL %s:%d: %s\n", __FILE__, __LINE__, #cond); \
+      return 1;                                                            \
+    }                                                                      \
+  } while (0)
