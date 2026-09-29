@@ -24,8 +24,18 @@ uint32_t XamBridge::Read(PortalDevice* device, std::span<uint8_t> buffer, uint32
     state = 0;
     return kXamSuccess;
   }
+  const Report report = device->Read();
+  // A real portal only streams status reports once activated ('A 01'). Trap Team restarts its
+  // portal handshake when it sees an inactive one, so those are withheld as "no new data".
+  constexpr size_t kStatusActiveByte = 6;
+  if (report[0] == 'S' && !(report[kStatusActiveByte] & 1)) {
+    delivered_last_ = false;
+    bytes_read = 0;
+    state = 0;
+    return kXamSuccess;
+  }
   std::array<uint8_t, kFrameSize> frame{};
-  FrameFromReport(device->Read(), frame.data());
+  FrameFromReport(report, frame.data());
   const size_t n = std::min(buffer.size(), frame.size());
   std::memcpy(buffer.data(), frame.data(), n);
   bytes_read = static_cast<uint32_t>(n);

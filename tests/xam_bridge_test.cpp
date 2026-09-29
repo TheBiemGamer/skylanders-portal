@@ -17,10 +17,29 @@ struct FakeDevice : PortalDevice {
 }  // namespace
 
 int main() {
+  // A real portal only sends status reports once the game has activated it ('A 01'); an inactive
+  // status report is withheld ("no new data"), since Trap Team resets its portal handshake on one.
+  {
+    XamBridge quiet;
+    FakeDevice idle;
+    idle.next[0] = 'S';  // active flag (byte 6, bit 0) clear
+    std::array<uint8_t, 32> b{};
+    uint32_t n = 99;
+    uint16_t s = 7;
+    CHECK(quiet.Read(&idle, b, n, s) == kXamSuccess);
+    CHECK(s == 0 && n == 0);
+    CHECK(quiet.Read(&idle, b, n, s) == kXamSuccess);
+    CHECK(s == 0 && n == 0);
+    idle.next[0] = 'R';  // replies are always delivered
+    CHECK(quiet.Read(&idle, b, n, s) == kXamSuccess);
+    CHECK(s == 1 && n == 32 && b[2] == 'R');
+  }
+
   XamBridge bridge;
   FakeDevice dev;
   dev.next[0] = 'S';
   dev.next[1] = 0x01;
+  dev.next[6] = 0x01;  // active
 
   // The game drains reads until one says "no new data" (state 0), then sends its commands. So
   // reads alternate: a report (state 1), then "nothing new" (state 0, no bytes).
