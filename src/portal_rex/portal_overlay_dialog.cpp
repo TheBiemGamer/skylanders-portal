@@ -1,4 +1,4 @@
-#include "overlay/portal_overlay_dialog.h"
+#include "portal_rex/portal_overlay_dialog.h"
 
 #include <algorithm>
 #include <cctype>
