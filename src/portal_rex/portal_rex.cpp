@@ -52,6 +52,9 @@ std::atomic<skylanders::portal::PortalDevice*> g_portal{nullptr};
 std::atomic<skylanders::portal::SoftwarePortal*> g_software_portal{nullptr};
 std::atomic<skylanders::portal::UsbPortal*> g_usb_portal{nullptr};
 
+// Set once a game hook has sent clean speaker PCM (SubmitSpeakerPcm).
+std::atomic<bool> g_speaker_pcm_tap{false};
+
 // Forwards the game's XamInputNonControllerGetRaw/SetRaw(Ex) calls (through the SDK's handler
 // hook) to whichever portal is active right now. g_portal is re-read on every call, so a live
 // portal_mode switch takes effect on the next poll.
@@ -87,9 +90,7 @@ class XamPortalHandler final : public rex::kernel::xam::NonControllerHandler {
 };
 
 XamPortalHandler g_xam_handler;
-
-// Set once a game hook has sent clean speaker PCM (SubmitSpeakerPcm).
-std::atomic<bool> g_speaker_pcm_tap{false};  // lives for the whole process, like the portals themselves
+  // lives for the whole process, like the portals themselves
 
 // portal_figure/portal_figures_dir arrive as UTF-8; convert explicitly so non-ANSI characters
 // survive (path::string() would throw for characters outside the ANSI code page).
