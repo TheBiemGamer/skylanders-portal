@@ -232,21 +232,46 @@ void PortalOverlayDialog::OnDraw(ImGuiIO& io) {
     };
 
     constexpr std::string_view kTrapTeam = "Trap Team";
+    constexpr std::string_view kTraps = "Traps";
     ImGui::BeginChild("create_list", ImVec2(0, 0), true);
-    std::string last_game;
-    bool section_open = false;
-    bool trap_team_shown = false;
+    // Game headers hold one tree node per category; all collapsed by default, and a filter opens
+    // every one with a match. Villains follow Traps inside Trap Team.
+    std::string_view game, category;
+    bool game_open = false, category_open = false, villains_drawn = false;
+    auto close_category = [&] {
+      if (category_open) ImGui::TreePop();
+      category_open = false;
+      if (game_open && game == kTrapTeam && category == kTraps && !villains_drawn) {
+        draw_villains();
+        villains_drawn = true;
+      }
+    };
+    auto close_game = [&] {
+      close_category();
+      if (game_open && game == kTrapTeam && !villains_drawn) draw_villains();
+      if (game == kTrapTeam) villains_drawn = true;
+      if (game_open) ImGui::PopID();
+      game_open = false;
+    };
     for (const auto& sky : portal::AllSkylanders()) {
       if (!matches(sky.name)) continue;
-      if (sky.game != last_game) {
-        if (last_game == kTrapTeam && section_open) draw_villains();
-        // Collapsed by default; a filter opens every section with a match.
+      if (sky.game != game) {
+        close_game();
         if (!filter.empty()) ImGui::SetNextItemOpen(true);
-        section_open = ImGui::CollapsingHeader(sky.game.data());
-        last_game = std::string(sky.game);
-        trap_team_shown |= sky.game == kTrapTeam;
+        game_open = ImGui::CollapsingHeader(sky.game.data());
+        game = sky.game;
+        // Category names repeat across games ("Variants"), so each game gets its own ID scope.
+        if (game_open) ImGui::PushID(sky.game.data());
+        category = {};
       }
-      if (!section_open) continue;
+      if (!game_open) continue;
+      if (sky.category != category) {
+        close_category();
+        if (!filter.empty()) ImGui::SetNextItemOpen(true);
+        category_open = ImGui::TreeNode(sky.category.data());
+        category = sky.category;
+      }
+      if (!category_open) continue;
       ImGui::PushID(static_cast<int>(sky.id) * 100000 + sky.variant);
       ImGui::TextUnformatted(std::string(sky.name).c_str());
       ImGui::SameLine(ImGui::GetWindowWidth() - 80);
@@ -260,9 +285,8 @@ void PortalOverlayDialog::OnDraw(ImGuiIO& io) {
       }
       ImGui::PopID();
     }
-    if (last_game == kTrapTeam && section_open) {
-      draw_villains();
-    } else if (!trap_team_shown && any_villain) {
+    close_game();
+    if (!villains_drawn && any_villain) {
       // The filter matched only villains: show them under their own Trap Team header.
       if (!filter.empty()) ImGui::SetNextItemOpen(true);
       if (ImGui::CollapsingHeader(kTrapTeam.data())) draw_villains();

@@ -1,5 +1,8 @@
 #include <filesystem>
 #include <fstream>
+#include <string_view>
+#include <utility>
+#include <vector>
 
 #include "portal/figure_catalog.h"
 #include "portal/figure_file.h"
@@ -99,6 +102,39 @@ int main() {
       CHECK(tree_rex->game == "Giants");
     }
     CHECK(FindSkylander(0xFFFF, 0xFFFF) == nullptr);
+  }
+
+  // Each game's figures are grouped into categories, in this order, with no category split up.
+  // Spyro's Adventure chase variants have the same id/variant as the normal figure, so they add
+  // no entries of their own.
+  {
+    const std::vector<std::pair<std::string_view, std::vector<std::string_view>>> expected = {
+        {"Spyro's Adventure", {"Cores", "Items", "Sidekicks", "Variants"}},
+        {"Giants",
+         {"Giants", "Cores", "LightCores", "Sidekicks", "Items", "Variants", "Chase Variants",
+          "Unreleased"}},
+        {"Swap Force",
+         {"Swappers", "Cores", "LightCores", "Items", "Variants", "Chase Variants", "Unreleased"}},
+        {"Trap Team",
+         {"Trap Masters", "Cores", "Eon's Elite", "Minis", "Items", "Traps", "Variants",
+          "Chase Variants", "Unreleased"}},
+        {"SuperChargers",
+         {"SuperChargers", "Vehicles", "Items", "Eon's Elite", "Variants", "Vehicle Variants",
+          "Chase Variants", "Unreleased"}},
+        {"Imaginators",
+         {"Senseis", "Villain Senseis", "Creation Crystals", "Items", "Sensei Variants",
+          "Villain Variants", "Chase Variants", "Unreleased"}},
+    };
+    std::vector<std::pair<std::string_view, std::vector<std::string_view>>> seen;
+    for (const SkylanderInfo& s : AllSkylanders()) {
+      if (seen.empty() || seen.back().first != s.game) seen.push_back({s.game, {}});
+      auto& cats = seen.back().second;
+      if (cats.empty() || cats.back() != s.category) cats.push_back(s.category);
+    }
+    CHECK(seen == expected);
+
+    const SkylanderInfo* tree_rex = FindSkylander(112, 4614);
+    CHECK(tree_rex && tree_rex->category == "Giants");
   }
 
   // A real .dump file (correct id/variant bytes) resolves display_name via the catalog, even

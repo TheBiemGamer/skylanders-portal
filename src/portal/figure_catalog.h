@@ -16,9 +16,10 @@ struct SkylanderInfo {
   uint16_t variant;
   std::string_view name;
   std::string_view game;
+  std::string_view category;  // group within the game, e.g. "Cores" or "Variants"
 };
 
-// The full built-in catalog, sorted by game then name -- the order any UI walking it should use.
+// The full built-in catalog, sorted by game, then category (in the game's own order), then name -- the order any UI walking it should use.
 std::span<const SkylanderInfo> AllSkylanders();
 
 // Looks up a figure's real name/game from its id/variant. Returns nullptr if the pair isn't in
