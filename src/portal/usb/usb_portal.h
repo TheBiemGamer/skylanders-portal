@@ -6,11 +6,13 @@
 #include <mutex>
 #include <optional>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 
 #include <hidapi.h>
 
+#include "portal/audio.h"
 #include "portal/portal_device.h"
 
 namespace skylanders::portal {
@@ -50,6 +52,8 @@ class UsbPortal final : public PortalDevice {
 
   void Write(const Report& report) override;
   Report Read() override;
+  // Queues one speaker packet for the audio writer thread; never blocks the caller.
+  void WriteAudio(const AudioPacket& packet) override;
 
   // Best-effort status, derived by passively observing replies that already flow through Read()
   // as part of relaying the game's own polling -- no extra USB traffic, no separate poller thread
@@ -93,6 +97,12 @@ class UsbPortal final : public PortalDevice {
   void ObserveReply(const Report& report);
 
   void SendRaw(const Report& report);  // unlocked -- callers hold io_mutex_
+  void AudioWriterLoop();
+
+  AudioPacketQueue audio_queue_{64};  // ~256 ms of audio at 8 kHz
+  std::thread audio_thread_;          // started on the first WriteAudio
+  std::once_flag audio_thread_started_;
+  std::atomic<bool> audio_stopping_{false};
   Report ReceiveRaw();                 // unlocked -- callers hold io_mutex_
 
   std::mutex io_mutex_;  // serializes every raw HID transfer: Write(), Read(), DumpFigure()

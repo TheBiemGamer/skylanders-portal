@@ -24,11 +24,18 @@
 #include "portal/xam_bridge.h"
 #include "portal/xbox_frame.h"
 #include "portal_rex/portal_overlay_dialog.h"
+#include "portal_rex/sdl_audio_sink.h"
 
 REXCVAR_DEFINE_STRING(portal_mode, "software", "Portal",
                       "Portal backend: 'software', 'usb' (a real, physical Portal of Power over "
                       "USB -- no driver changes needed), or 'none'")
     .allowed({"software", "usb", "none"});
+REXCVAR_DEFINE_STRING(portal_audio, "auto", "Portal",
+                      "Portal speaker audio: 'auto' (the real portal's speaker in usb mode, PC "
+                      "speakers in software mode) or 'off'")
+    .allowed({"auto", "off"});
+REXCVAR_DEFINE_DOUBLE(portal_speaker_volume, 1.0, "Portal",
+                      "Volume of portal speaker audio played on the PC (software mode), 0.0 to 1.0");
 REXCVAR_DEFINE_BOOL(portal_test_figure, false, "Portal",
                     "Development: put an all-zero figure on the portal (the game reports it as a "
                     "problem toy)");
@@ -147,6 +154,9 @@ class TransitioningPortal final : public skylanders::portal::PortalDevice {
   explicit TransitioningPortal(skylanders::portal::PortalDevice* real) : real_(real) {}
 
   void Write(const skylanders::portal::Report& report) override { real_->Write(report); }
+  void WriteAudio(const skylanders::portal::AudioPacket& packet) override {
+    real_->WriteAudio(packet);
+  }
 
   skylanders::portal::Report Read() override {
     skylanders::portal::Report report = real_->Read();
@@ -184,6 +194,10 @@ class UsbHotPlugPortal final : public skylanders::portal::PortalDevice {
   void Write(const skylanders::portal::Report& report) override {
     MaybeReconnect();
     if (current_) current_->Write(report);
+  }
+
+  void WriteAudio(const skylanders::portal::AudioPacket& packet) override {
+    if (current_ && REXCVAR_GET(portal_audio) != "off") current_->WriteAudio(packet);
   }
 
   skylanders::portal::Report Read() override {
@@ -248,6 +262,15 @@ skylanders::portal::SoftwarePortal* SetUpSoftwarePortal() {
     REXLOG_TRACE("Portal figure research: software slot {} block {} {} -> {}", slot, block, op,
                 HexBytes(data, n));
   });
+  if (REXCVAR_GET(portal_audio) != "off") {
+    // Opened once and kept for the whole process, like the portals themselves.
+    static std::unique_ptr<skylanders::SdlPortalAudioSink> sink =
+        skylanders::SdlPortalAudioSink::Open();
+    if (sink) {
+      sink->SetVolume(float(REXCVAR_GET(portal_speaker_volume)));
+      software->SetAudioSink(sink.get());
+    }
+  }
   return software;
 }
 

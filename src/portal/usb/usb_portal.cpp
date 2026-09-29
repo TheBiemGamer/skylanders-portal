@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstring>
 #include <string_view>
 
 #include <rex/logging.h>
@@ -45,6 +46,9 @@ UsbPortal::UsbPortal() {
 }
 
 UsbPortal::~UsbPortal() {
+  audio_stopping_.store(true);
+  audio_queue_.Close();
+  if (audio_thread_.joinable()) audio_thread_.join();
   if (device_ != nullptr) hid_close(device_);
 }
 
@@ -273,6 +277,31 @@ std::optional<FigureData> UsbPortal::CachedFigureData(int slot) const {
     if (!slot_block_seen_[slot][block]) return std::nullopt;
   }
   return slot_cache_[slot];
+}
+
+void UsbPortal::WriteAudio(const AudioPacket& packet) {
+  if (!device_) return;
+  std::call_once(audio_thread_started_,
+                 [this] { audio_thread_ = std::thread([this] { AudioWriterLoop(); }); });
+  audio_queue_.Push(packet);  // never blocks the game thread
+}
+
+// Speaker audio goes out on the interrupt OUT endpoint (hid_write), unlike commands, which the
+// firmware only accepts as SET_REPORT (hid_send_output_report, see SendRaw). PopWait also returns
+// nullopt on a timeout, so the loop only ends once the destructor sets audio_stopping_.
+void UsbPortal::AudioWriterLoop() {
+  for (;;) {
+    auto packet = audio_queue_.PopWait(std::chrono::milliseconds(500));
+    if (!packet) {
+      if (audio_stopping_.load()) return;
+      continue;
+    }
+    std::lock_guard<std::mutex> lock(io_mutex_);
+    uint8_t out[1 + kAudioPacketSize];
+    out[0] = 0;  // report ID
+    std::memcpy(out + 1, packet->data(), kAudioPacketSize);
+    if (hid_write(device_, out, sizeof(out)) < 0) REXLOG_WARN("Portal: speaker audio write failed");
+  }
 }
 
 }  // namespace skylanders::portal
