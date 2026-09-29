@@ -22,20 +22,27 @@ int main() {
   dev.next[0] = 'S';
   dev.next[1] = 0x01;
 
+  // The game drains reads until one says "no new data" (state 0), then sends its commands. So
+  // reads alternate: a report (state 1), then "nothing new" (state 0, no bytes).
   std::array<uint8_t, 32> buf{};
   uint32_t bytes = 0;
   uint16_t state = 7;
   CHECK(bridge.Read(&dev, buf, bytes, state) == kXamSuccess);
   CHECK(buf[0] == 0x0B && buf[1] == 0x14 && buf[2] == 'S' && buf[3] == 0x01);
   CHECK(bytes == 32);
-  CHECK(state == 0);  // first call: no previous status to match
+  CHECK(state == 1);
   CHECK(bridge.Read(&dev, buf, bytes, state) == kXamSuccess);
-  CHECK(state == 1);  // same status as the previous call (Xenia Canary's rule)
+  CHECK(state == 0);
+  CHECK(bytes == 0);
+  CHECK(bridge.Read(&dev, buf, bytes, state) == kXamSuccess);
+  CHECK(state == 1 && bytes == 32);
+  CHECK(bridge.Read(&dev, buf, bytes, state) == kXamSuccess);  // back to "nothing new"
+  CHECK(state == 0);
 
   // A shorter buffer gets only what fits.
   std::array<uint8_t, 8> small{};
   CHECK(bridge.Read(&dev, small, bytes, state) == kXamSuccess);
-  CHECK(bytes == 8 && small[0] == 0x0B);
+  CHECK(state == 1 && bytes == 8 && small[0] == 0x0B);
 
   // Command write: header stripped.
   std::array<uint8_t, 32> frame{};

@@ -21,7 +21,7 @@ class XamBridge {
   uint32_t Write(PortalDevice* device, std::span<const uint8_t> buffer);
 
  private:
-  std::optional<uint32_t> previous_status_;
+  bool delivered_last_ = false;  // the previous Read handed the game a report
 };
 
 }  // namespace skylanders::portal

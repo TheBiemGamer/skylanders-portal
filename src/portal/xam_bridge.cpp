@@ -10,18 +10,28 @@ namespace skylanders::portal {
 
 uint32_t XamBridge::Read(PortalDevice* device, std::span<uint8_t> buffer, uint32_t& bytes_read,
                          uint16_t& state) {
-  const uint32_t status = device ? kXamSuccess : kXamDeviceNotConnected;
-  if (device) {
-    std::array<uint8_t, kFrameSize> frame{};
-    FrameFromReport(device->Read(), frame.data());
-    const size_t n = std::min(buffer.size(), frame.size());
-    std::memcpy(buffer.data(), frame.data(), n);
-    bytes_read = static_cast<uint32_t>(n);
-    // Xenia Canary: state is 1 when this call's status equals the previous call's.
-    state = previous_status_ && *previous_status_ == status ? 1 : 0;
+  if (!device) {
+    delivered_last_ = false;
+    return kXamDeviceNotConnected;
   }
-  previous_status_ = status;
-  return status;
+  // The game keeps reading until a read says "no new data" (state 0), and only then sends its
+  // own commands; a failed read means the portal is gone. A PortalDevice always has a report to
+  // give (a status report when nothing else is queued), so every other read answers "no new
+  // data": each of the game's polls gets one report, then it goes on to write.
+  if (delivered_last_) {
+    delivered_last_ = false;
+    bytes_read = 0;
+    state = 0;
+    return kXamSuccess;
+  }
+  std::array<uint8_t, kFrameSize> frame{};
+  FrameFromReport(device->Read(), frame.data());
+  const size_t n = std::min(buffer.size(), frame.size());
+  std::memcpy(buffer.data(), frame.data(), n);
+  bytes_read = static_cast<uint32_t>(n);
+  state = 1;
+  delivered_last_ = true;
+  return kXamSuccess;
 }
 
 uint32_t XamBridge::Write(PortalDevice* device, std::span<const uint8_t> buffer) {
