@@ -202,11 +202,8 @@ std::optional<std::filesystem::path> SoftwarePortal::Source(int slot) const {
 
 void SoftwarePortal::SetAudioSink(PortalAudioSink* sink) { audio_sink_.store(sink); }
 
-void SoftwarePortal::WriteAudio(const AudioPacket& packet) {
-  PortalAudioSink* sink = audio_sink_.load();
-  if (!sink) return;
-  const auto samples = SamplesFromAudioPacket(packet, kPortalAudioFormat);
-  sink->Submit(samples);
+void SoftwarePortal::WriteAudio(std::span<const int16_t> pcm) {
+  if (PortalAudioSink* sink = audio_sink_.load()) sink->Submit(pcm);
 }
 
 }  // namespace skylanders::portal

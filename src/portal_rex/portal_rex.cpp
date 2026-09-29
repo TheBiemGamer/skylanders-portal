@@ -66,9 +66,9 @@ class XamPortalHandler final : public rex::kernel::xam::NonControllerHandler {
   uint32_t Write(uint32_t device_id, std::span<const uint8_t> buffer) override {
     (void)device_id;
     std::lock_guard<std::mutex> lock(mu_);
-    // LED updates ('C') arrive ~10 times a second, and speaker audio constantly; leave them out.
-    if (buffer.size() >= 3 && buffer[2] != 'C' &&
-        buffer.size() != skylanders::portal::kAudioPacketSize) {
+    // LED updates ('C') arrive ~10 times a second, and speaker audio (0B 17) constantly; leave
+    // them out.
+    if (buffer.size() >= 3 && buffer[1] == 0x14 && buffer[2] != 'C') {
       REXLOG_DEBUG("Portal write: {:02x} {:02x} {:02x}", buffer[2],
                    buffer.size() > 3 ? buffer[3] : 0, buffer.size() > 4 ? buffer[4] : 0);
     }
@@ -154,9 +154,7 @@ class TransitioningPortal final : public skylanders::portal::PortalDevice {
   explicit TransitioningPortal(skylanders::portal::PortalDevice* real) : real_(real) {}
 
   void Write(const skylanders::portal::Report& report) override { real_->Write(report); }
-  void WriteAudio(const skylanders::portal::AudioPacket& packet) override {
-    real_->WriteAudio(packet);
-  }
+  void WriteAudio(std::span<const int16_t> pcm) override { real_->WriteAudio(pcm); }
 
   skylanders::portal::Report Read() override {
     skylanders::portal::Report report = real_->Read();
@@ -196,8 +194,8 @@ class UsbHotPlugPortal final : public skylanders::portal::PortalDevice {
     if (current_) current_->Write(report);
   }
 
-  void WriteAudio(const skylanders::portal::AudioPacket& packet) override {
-    if (current_ && REXCVAR_GET(portal_audio) != "off") current_->WriteAudio(packet);
+  void WriteAudio(std::span<const int16_t> pcm) override {
+    if (current_ && REXCVAR_GET(portal_audio) != "off") current_->WriteAudio(pcm);
   }
 
   skylanders::portal::Report Read() override {

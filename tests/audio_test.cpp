@@ -1,5 +1,6 @@
 #include <chrono>
 #include <thread>
+#include <vector>
 
 #include "portal/audio.h"
 #include "test_util.h"
@@ -7,24 +8,23 @@
 using namespace skylanders::portal;
 
 int main() {
-  // Sample conversion: little-endian signed, first sample 0x1234, last 0x8000.
-  AudioPacket p{};
-  p[0] = 0x34;
-  p[1] = 0x12;
-  p[62] = 0x00;
-  p[63] = 0x80;
-  auto s = SamplesFromAudioPacket(p, AudioSampleFormat::kSigned16LE);
-  CHECK(s[0] == 0x1234);
-  CHECK(s[31] == -32768);
-  // Unsigned: 0x8000 is silence (0), 0x0000 is the most negative value.
-  auto u = SamplesFromAudioPacket(p, AudioSampleFormat::kUnsigned16LE);
-  CHECK(u[31] == 0);
-  CHECK(u[1] == -32768);
-  // Big-endian signed.
-  AudioPacket b{};
-  b[0] = 0x12;
-  b[1] = 0x34;
-  CHECK(SamplesFromAudioPacket(b, AudioSampleFormat::kSigned16BE)[0] == 0x1234);
+  // PCM is repacked into the Wii U/PS3 portal's 64-byte packets: 32 signed 16-bit little-endian
+  // samples. Leftover samples wait for the next call.
+  {
+    PcmPacketizer packetizer;
+    std::vector<AudioPacket> packets;
+    auto emit = [&](const AudioPacket& p) { packets.push_back(p); };
+    std::vector<int16_t> pcm(60);
+    for (int i = 0; i < 60; ++i) pcm[i] = int16_t(i * 100 - 3000);
+    packetizer.Add(pcm, emit);
+    CHECK(packets.size() == 1);
+    CHECK(packets[0][0] == uint8_t(-3000 & 0xFF) && packets[0][1] == uint8_t((-3000 >> 8) & 0xFF));
+    CHECK(packets[0][62] == uint8_t(100) && packets[0][63] == uint8_t(0));  // sample 31 = 100
+    packetizer.Add(std::span<const int16_t>(pcm).first(4), emit);
+    REQUIRE_OR_RETURN(packets.size() == 2);
+    // The second packet starts with sample 32 of the first call (3200 - 3000 = 200).
+    CHECK(packets[1][0] == uint8_t(200) && packets[1][1] == 0);
+  }
 
   // Queue: bounded, drops the oldest, never blocks the producer.
   AudioPacketQueue q(2);

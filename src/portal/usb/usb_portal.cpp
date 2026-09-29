@@ -279,11 +279,12 @@ std::optional<FigureData> UsbPortal::CachedFigureData(int slot) const {
   return slot_cache_[slot];
 }
 
-void UsbPortal::WriteAudio(const AudioPacket& packet) {
+void UsbPortal::WriteAudio(std::span<const int16_t> pcm) {
   if (!device_) return;
   std::call_once(audio_thread_started_,
                  [this] { audio_thread_ = std::thread([this] { AudioWriterLoop(); }); });
-  audio_queue_.Push(packet);  // never blocks the game thread
+  // Never blocks the game thread: full packets go to the writer thread's bounded queue.
+  audio_packetizer_.Add(pcm, [this](const AudioPacket& packet) { audio_queue_.Push(packet); });
 }
 
 // Speaker audio goes out on the interrupt OUT endpoint (hid_write), unlike commands, which the

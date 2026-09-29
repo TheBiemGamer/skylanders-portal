@@ -46,15 +46,19 @@ uint32_t XamBridge::Read(PortalDevice* device, std::span<uint8_t> buffer, uint32
 
 uint32_t XamBridge::Write(PortalDevice* device, std::span<const uint8_t> buffer) {
   if (!device) return kXamDeviceNotConnected;
-  if (buffer.size() == kAudioPacketSize) {
-    AudioPacket packet;
-    std::memcpy(packet.data(), buffer.data(), kAudioPacketSize);
-    device->WriteAudio(packet);
+  constexpr uint8_t kSpeakerFrameType = 0x17;  // 0B 17: G.726 speaker audio
+  if (buffer.size() > 2 && buffer[0] == kFrameHeader0 && buffer[1] == kSpeakerFrameType) {
+    pcm_.clear();
+    DecodeSpeakerAudio(buffer.subspan(2), speaker_decoder_, pcm_);
+    device->WriteAudio(pcm_);
     return kXamSuccess;
   }
   std::array<uint8_t, kFrameSize> frame{};
   std::memcpy(frame.data(), buffer.data(), std::min(buffer.size(), frame.size()));
-  if (auto report = ReportFromFrame(frame.data())) device->Write(*report);
+  if (auto report = ReportFromFrame(frame.data())) {
+    if ((*report)[0] == 'M') speaker_decoder_.Reset();  // speaker switched: a new stream starts
+    device->Write(*report);
+  }
   return kXamSuccess;
 }
 

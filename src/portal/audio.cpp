@@ -2,20 +2,16 @@
 
 namespace skylanders::portal {
 
-std::array<int16_t, kAudioSamplesPerPacket> SamplesFromAudioPacket(const AudioPacket& packet,
-                                                                    AudioSampleFormat format) {
-  std::array<int16_t, kAudioSamplesPerPacket> out{};
-  const bool big_endian =
-      format == AudioSampleFormat::kSigned16BE || format == AudioSampleFormat::kUnsigned16BE;
-  const bool is_unsigned =
-      format == AudioSampleFormat::kUnsigned16LE || format == AudioSampleFormat::kUnsigned16BE;
-  for (size_t i = 0; i < kAudioSamplesPerPacket; i++) {
-    const uint8_t first = packet[i * 2], second = packet[i * 2 + 1];
-    uint16_t raw = big_endian ? uint16_t(first << 8 | second) : uint16_t(second << 8 | first);
-    if (is_unsigned) raw ^= 0x8000;  // unsigned midpoint 0x8000 -> signed 0
-    out[i] = static_cast<int16_t>(raw);
+void PcmPacketizer::Add(std::span<const int16_t> samples,
+                        const std::function<void(const AudioPacket&)>& emit) {
+  for (int16_t sample : samples) {
+    pending_[count_ * 2] = uint8_t(sample & 0xFF);
+    pending_[count_ * 2 + 1] = uint8_t((uint16_t(sample) >> 8) & 0xFF);
+    if (++count_ == kAudioSamplesPerPacket) {
+      emit(pending_);
+      count_ = 0;
+    }
   }
-  return out;
 }
 
 void AudioPacketQueue::Push(const AudioPacket& packet) {

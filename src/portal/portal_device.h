@@ -3,6 +3,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <span>
 
 #include "portal/audio.h"
 
@@ -32,8 +33,8 @@ class PortalDevice {
   // Portal to game: the next report. A queued command reply if there is one, otherwise a status report.
   virtual Report Read() = 0;
 
-  // Game to portal: one 64-byte speaker audio packet. Default: no speaker, dropped.
-  virtual void WriteAudio(const AudioPacket& packet) { (void)packet; }
+  // Game to portal: decoded speaker audio (8 kHz mono PCM). Default: no speaker, dropped.
+  virtual void WriteAudio(std::span<const int16_t> pcm) { (void)pcm; }
 };
 
 }  // namespace skylanders::portal

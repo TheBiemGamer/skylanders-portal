@@ -27,11 +27,14 @@ std::unique_ptr<SdlPortalAudioSink> SdlPortalAudioSink::Open() {
 SdlPortalAudioSink::~SdlPortalAudioSink() { SDL_DestroyAudioStream(stream_); }
 
 void SdlPortalAudioSink::Submit(std::span<const int16_t> samples) {
-  std::array<int16_t, portal::kAudioSamplesPerPacket> scaled{};
   const float v = std::clamp(volume_.load(), 0.0f, 1.0f);
-  const size_t n = std::min(samples.size(), scaled.size());
-  for (size_t i = 0; i < n; i++) scaled[i] = static_cast<int16_t>(samples[i] * v);
-  SDL_PutAudioStreamData(stream_, scaled.data(), int(n * sizeof(int16_t)));  // non-blocking
+  std::array<int16_t, 64> scaled{};
+  while (!samples.empty()) {
+    const size_t n = std::min(samples.size(), scaled.size());
+    for (size_t i = 0; i < n; i++) scaled[i] = static_cast<int16_t>(samples[i] * v);
+    SDL_PutAudioStreamData(stream_, scaled.data(), int(n * sizeof(int16_t)));  // non-blocking
+    samples = samples.subspan(n);
+  }
 }
 
 }  // namespace skylanders

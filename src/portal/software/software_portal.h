@@ -19,8 +19,8 @@ class SoftwarePortal : public PortalDevice {
  public:
   void Write(const Report& report) override;
   Report Read() override;
-  // Decodes the packet and passes it to the audio sink, if any.
-  void WriteAudio(const AudioPacket& packet) override;
+  // Passes speaker audio to the audio sink, if any.
+  void WriteAudio(std::span<const int16_t> pcm) override;
 
   // Where speaker audio goes; nullptr drops it (and 'M' then reports no speaker). Not owned.
   // Thread-safe.

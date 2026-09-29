@@ -1,5 +1,7 @@
 #include <vector>
 
+#include "portal/g726.h"
+
 #include "portal/xam_bridge.h"
 #include "test_util.h"
 
@@ -8,11 +10,13 @@ using namespace skylanders::portal;
 namespace {
 struct FakeDevice : PortalDevice {
   std::vector<Report> writes;
-  std::vector<AudioPacket> audio;
+  std::vector<int16_t> audio;
   Report next{};
   void Write(const Report& r) override { writes.push_back(r); }
   Report Read() override { return next; }
-  void WriteAudio(const AudioPacket& p) override { audio.push_back(p); }
+  void WriteAudio(std::span<const int16_t> pcm) override {
+    audio.insert(audio.end(), pcm.begin(), pcm.end());
+  }
 };
 }  // namespace
 
@@ -78,12 +82,30 @@ int main() {
   CHECK(bridge.Write(&dev, bad) == kXamSuccess);
   CHECK(dev.writes.size() == 1);
 
-  // 64-byte write: speaker audio, passed as-is.
-  std::array<uint8_t, 64> audio{};
-  audio[0] = 0x11;
-  audio[63] = 0x22;
-  CHECK(bridge.Write(&dev, audio) == kXamSuccess);
-  CHECK(dev.audio.size() == 1 && dev.audio[0][0] == 0x11 && dev.audio[0][63] == 0x22);
+  // Speaker audio: 0B 17 frames carry 30 bytes of G.726 codes; the device gets 60 decoded samples.
+  std::array<uint8_t, 32> speaker{};
+  speaker[0] = 0x0B;
+  speaker[1] = 0x17;
+  for (size_t i = 2; i < speaker.size(); ++i) speaker[i] = uint8_t(i * 37);
+  const auto codes = std::span<const uint8_t>(speaker).subspan(2);
+  CHECK(bridge.Write(&dev, speaker) == kXamSuccess);
+  G726Decoder ref;
+  std::vector<int16_t> want;
+  DecodeSpeakerAudio(codes, ref, want);
+  CHECK(dev.audio.size() == 60 && dev.audio == want);
+  CHECK(dev.writes.size() == 1);  // not treated as a command
+  // One decoder across frames: the second frame continues from the first's state.
+  dev.audio.clear();
+  CHECK(bridge.Write(&dev, speaker) == kXamSuccess);
+  std::vector<int16_t> next;
+  DecodeSpeakerAudio(codes, ref, next);
+  CHECK(dev.audio == next);
+  // 'M' (speaker on/off) starts a new stream.
+  const std::array<uint8_t, 4> m = {0x0B, 0x14, 'M', 0x01};
+  CHECK(bridge.Write(&dev, m) == kXamSuccess);
+  dev.audio.clear();
+  CHECK(bridge.Write(&dev, speaker) == kXamSuccess);
+  CHECK(dev.audio == want);
 
   // No device.
   CHECK(bridge.Read(nullptr, buf, bytes, state) == kXamDeviceNotConnected);

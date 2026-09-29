@@ -435,14 +435,16 @@ int main() {
     r = portal.Read();
     CHECK(r[0] == 0x4D && r[1] == 0x01 && r[2] == kAudioCapableVersion[0] &&
           r[3] == kAudioCapableVersion[1]);
-    // Audio reaches the sink as 32 samples.
-    AudioPacket p{};
-    portal.WriteAudio(p);
-    CHECK(sink.got.size() == 32);
+    // Speaker audio reaches the sink unchanged.
+    std::array<int16_t, 60> pcm{};
+    pcm[0] = 1234;
+    pcm[59] = -4321;
+    portal.WriteAudio(pcm);
+    CHECK(sink.got.size() == 60 && sink.got[0] == 1234 && sink.got[59] == -4321);
     // No sink: audio is dropped without error.
     portal.SetAudioSink(nullptr);
-    portal.WriteAudio(p);
-    CHECK(sink.got.size() == 32);
+    portal.WriteAudio(pcm);
+    CHECK(sink.got.size() == 60);
   }
 
   return Finish("software_portal");

@@ -52,8 +52,9 @@ class UsbPortal final : public PortalDevice {
 
   void Write(const Report& report) override;
   Report Read() override;
-  // Queues one speaker packet for the audio writer thread; never blocks the caller.
-  void WriteAudio(const AudioPacket& packet) override;
+  // Repacks speaker audio into the portal's 64-byte packets and queues them for the audio writer
+  // thread; never blocks the caller.
+  void WriteAudio(std::span<const int16_t> pcm) override;
 
   // Best-effort status, derived by passively observing replies that already flow through Read()
   // as part of relaying the game's own polling -- no extra USB traffic, no separate poller thread
@@ -100,6 +101,7 @@ class UsbPortal final : public PortalDevice {
   void AudioWriterLoop();
 
   AudioPacketQueue audio_queue_{64};  // ~256 ms of audio at 8 kHz
+  PcmPacketizer audio_packetizer_;    // game thread only
   std::thread audio_thread_;          // started on the first WriteAudio
   std::once_flag audio_thread_started_;
   std::atomic<bool> audio_stopping_{false};
