@@ -205,6 +205,15 @@ void RealPortalBridge::Arrived(int real_slot) {
     std::error_code ec;
     std::filesystem::create_directories(options_.backup_dir, ec);
     s.source = options_.backup_dir / (name + " " + Hex(s.uid) + ".dump");
+    // The backup file is already on the emulated portal (put on from the menu): it would refuse a
+    // second slot with that file, and the file is in use, so it is left alone.
+    if (emulated_->SlotWithSource(s.source) >= 0) {
+      s.phase = RealSlot::Phase::kFailed;
+      Log("Hybrid portal: " + s.source.filename().string() +
+          " is already on the emulated portal; take it off there, then lift " + name +
+          " off the real portal and put it back");
+      return;
+    }
     // A backup with other data (played from the portal menu meanwhile, or an older state) is kept
     // under another name rather than overwritten.
     if (std::filesystem::exists(s.source)) {
@@ -234,9 +243,13 @@ void RealPortalBridge::Arrived(int real_slot) {
     Log("Hybrid portal: the emulated portal is full; " + name + " is left out");
     return;
   }
-  emulated_->PlaceFigure(target, s.data,
-                         s.source.empty() ? std::nullopt
-                                          : std::optional<std::filesystem::path>(s.source));
+  if (!emulated_->PlaceFigure(target, s.data,
+                              s.source.empty() ? std::nullopt
+                                               : std::optional<std::filesystem::path>(s.source))) {
+    s.phase = RealSlot::Phase::kFailed;
+    Log("Hybrid portal: the emulated portal refused " + name + "; lift it off and put it back");
+    return;
+  }
   s.phase = RealSlot::Phase::kMirrored;
   {
     std::lock_guard lock(mu_);

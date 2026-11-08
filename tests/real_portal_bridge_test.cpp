@@ -157,6 +157,46 @@ int main() {
     CHECK(LoadFigureFile(dir / "Chop Chop 44332211 before.dump") == played);
   }
 
+  // The backup file is already on the emulated portal (put on from the menu, whose list includes
+  // the backup folder): SoftwarePortal refuses one file in two slots, so the figure is not
+  // mirrored, the file in use is left alone, and nothing that slot's game writes reaches the toy.
+  {
+    std::filesystem::remove_all(dir);
+    SoftwarePortal real, emulated;
+    RealPortalBridge bridge(&emulated, {dir, nullptr, nullptr});
+    emulated.SetWriteCallback([&](int slot, const FigureData& data,
+                                  const std::optional<std::filesystem::path>&) {
+      bridge.OnEmulatedWrite(slot, data);
+    });
+    FigureData played = chop;
+    played[8 * kBlockSize] ^= 0xFF;
+    std::filesystem::create_directories(dir);
+    const std::filesystem::path backup = dir / "Chop Chop 44332211.dump";
+    CHECK(SaveFigureFileAtomic(backup, played));
+    CHECK(emulated.PlaceFigure(0, played, backup));
+    real.PlaceFigure(0, chop);
+    Run(bridge, &real);
+    CHECK(FirstFigure(emulated) == 0);
+    CHECK(!emulated.HasFigure(kMaxFigures - 1));
+    CHECK(!bridge.IsCopySlot(0));
+    CHECK(bridge.RealUids().empty());
+    CHECK(LoadFigureFile(backup) == played);
+    CHECK(!std::filesystem::exists(dir / "Chop Chop 44332211 before.dump"));
+    emulated.Write(Cmd({'A', 0x01}));
+    GameWrite(emulated, 0, 9, 0x77);
+    Run(bridge, &real);
+    CHECK(real.Figure(0) == chop);
+
+    // Taken off the emulated portal, then the toy lifted and put back: mirrored as usual.
+    emulated.RemoveFigure(0);
+    real.RemoveFigure(0);
+    Run(bridge, &real);
+    real.PlaceFigure(0, chop);
+    Run(bridge, &real);
+    CHECK(emulated.HasFigure(kMaxFigures - 1));
+    CHECK(bridge.RealUids().size() == 1);
+  }
+
   std::filesystem::remove_all(dir);
   return Finish("real portal bridge");
 }
