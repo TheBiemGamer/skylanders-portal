@@ -197,9 +197,11 @@ void PortalOverlayDialog::OnDraw(ImGuiIO& io) {
     return;
   }
   if (portal::ParsePortalMode(REXCVAR_GET(portal_mode)) == portal::PortalMode::kUsb) {
-    ImGui::TextWrapped(
-        "portal_mode is 'usb' but no USB portal is currently connected. Plug it in -- it's "
-        "detected automatically, no restart needed.");
+    // Only a portal really there is "active" (an Xbox 360 one on WinUSB has no figure list here,
+    // GetUsbPortal() is the HID one); without one it isn't found and the game keeps looking.
+    ImGui::TextWrapped("%s", RealPortalConnected()
+                                 ? "The real USB portal is active. Put your figures on it."
+                                 : "No real portal found. Plug it in; the game keeps looking for it.");
     ImGui::End();
     return;
   }

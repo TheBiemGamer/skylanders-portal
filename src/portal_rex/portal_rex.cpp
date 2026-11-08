@@ -19,10 +19,12 @@
 #include "portal/figure_file.h"
 #include "portal/portal_device.h"
 #include "portal/portal_mode.h"
+#include "portal/traffic_log.h"
 #include "portal/software/software_portal.h"
 #include "portal/text.h"
 #include "portal/utf8_path.h"
 #include "portal/usb/usb_portal.h"
+#include "portal/usb/xbox360_portal.h"
 #include "portal/xam_bridge.h"
 #include "portal/xbox_frame.h"
 #include "portal_rex/portal_overlay_dialog.h"
@@ -53,6 +55,9 @@ namespace {
 std::atomic<skylanders::portal::PortalDevice*> g_portal{nullptr};
 std::atomic<skylanders::portal::SoftwarePortal*> g_software_portal{nullptr};
 std::atomic<skylanders::portal::UsbPortal*> g_usb_portal{nullptr};
+// A real Xbox 360 portal on WinUSB (portal/usb/xbox360_portal.h), set by the USB mode when no HID
+// portal opens: the game's frames then go to it unchanged, bypassing g_portal and the bridge.
+std::atomic<skylanders::portal::Xbox360Portal*> g_xbox360{nullptr};
 
 // Set once a game hook has sent clean speaker PCM (SubmitSpeakerPcm).
 std::atomic<bool> g_speaker_pcm_tap{false};
@@ -72,6 +77,14 @@ class XamPortalHandler final : public rex::kernel::xam::NonControllerHandler {
                 uint16_t& state) override {
     (void)device_id;
     std::lock_guard<std::mutex> lock(mu_);
+    if (skylanders::portal::Xbox360Portal* x360 = LiveXbox360()) {
+      if (!x360->Read(buffer, bytes_read)) return skylanders::portal::kXamDeviceNotConnected;
+      if (bytes_read >= skylanders::portal::kFrameSize) {
+        if (auto reply = skylanders::portal::ReportFromFrame(buffer.data())) x360_traffic_.OnReply(*reply);
+      }
+      state = bytes_read ? 1 : 0;
+      return skylanders::portal::kXamSuccess;
+    }
     return bridge_.Read(g_portal.load(), buffer, bytes_read, state);
   }
   uint32_t Write(uint32_t device_id, std::span<const uint8_t> buffer) override {
@@ -89,10 +102,38 @@ class XamPortalHandler final : public rex::kernel::xam::NonControllerHandler {
         g_software_portal.load()) {
       return skylanders::portal::kXamSuccess;
     }
+    if (skylanders::portal::Xbox360Portal* x360 = LiveXbox360()) {
+      // Portal speaker off: the Xbox 360 portal's speaker frames don't go out (TrapTeamRecomp #22;
+      // the HID portals' audio already stops in UsbHotPlugPortal::WriteAudio).
+      if (buffer.size() > 2 && buffer[0] == 0x0B && buffer[1] == 0x17 &&
+          REXCVAR_GET(portal_audio) == "off") {
+        return skylanders::portal::kXamSuccess;
+      }
+      if (buffer.size() >= skylanders::portal::kFrameSize) {
+        if (auto command = skylanders::portal::ReportFromFrame(buffer.data())) x360_traffic_.OnCommand(*command);
+      }
+      return x360->Write(buffer) ? skylanders::portal::kXamSuccess : skylanders::portal::kXamDeviceNotConnected;
+    }
     return bridge_.Write(g_portal.load(), buffer);
   }
 
  private:
+  // The Xbox 360 portal's commands and replies in plain lines (traffic_log.h; the HID portals have
+  // their own in UsbPortal).
+  skylanders::portal::PortalTrafficLog x360_traffic_{
+      "Xbox 360", [](const std::string& line) { REXLOG_INFO("{}", line); }};
+  // The Xbox 360 portal while it works; one that failed is dropped (never freed, like the other
+  // portals), and the USB mode's hot-plug retry looks for a portal again.
+  static skylanders::portal::Xbox360Portal* LiveXbox360() {
+    skylanders::portal::Xbox360Portal* x360 = g_xbox360.load();
+    if (x360 && x360->SeemsDisconnected()) {
+      REXLOG_WARN("Portal: the Xbox 360 portal appears to have been disconnected; will keep retrying");
+      g_xbox360.store(nullptr);
+      return nullptr;
+    }
+    return x360;
+  }
+
   std::mutex mu_;
   skylanders::portal::XamBridge bridge_;
 };
@@ -207,6 +248,18 @@ class UsbHotPlugPortal final : public skylanders::portal::PortalDevice {
       phase_ = AnnouncePhase::kForceEmpty;
       added_reports_ = 0;
       REXLOG_INFO("Portal: usb device connected");
+      return;
+    }
+    // No HID portal: maybe an Xbox 360 one on WinUSB. Once it is set, the XAM handler talks to it
+    // directly and this object isn't asked any more until it fails.
+    if (!g_xbox360.load()) {
+      auto* x360 = new skylanders::portal::Xbox360Portal();  // never freed once published
+      if (x360->IsOpen()) {
+        g_xbox360.store(x360);
+        REXLOG_INFO("Portal: Xbox 360 portal connected (WinUSB)");
+      } else {
+        delete x360;  // never published, so nothing else could have seen it
+      }
     }
   }
 
@@ -292,6 +345,7 @@ void SwitchPortalMode(std::string_view mode_text) {
                 mode_text);
     return;
   }
+  g_xbox360.store(nullptr);  // only the USB mode looks for one (UsbHotPlugPortal)
   if (*mode == skylanders::portal::PortalMode::kNone) {
     g_portal.store(nullptr);
     g_software_portal.store(nullptr);
@@ -441,6 +495,10 @@ bool CreateAndPlaceVillainTrap(int slot, const portal::TrapVillain& villain, std
 portal::SoftwarePortal* GetSoftwarePortal() { return g_software_portal.load(); }
 
 portal::UsbPortal* GetUsbPortal() { return g_usb_portal.load(); }
+
+bool RealPortalConnected() {
+  return g_usb_portal.load() != nullptr || g_xbox360.load() != nullptr;
+}
 
 std::optional<portal::FigureData> ReadRealFigureBlocks(int slot) {
   portal::UsbPortal* usb = g_usb_portal.load();
