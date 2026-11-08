@@ -2,10 +2,12 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cstring>
-#include <string_view>
 
+#include "portal/figure_catalog.h"
 #include "portal/figure_crypto.h"
+#include "portal/figure_file.h"
 
 namespace skylanders::portal {
 
@@ -13,15 +15,64 @@ namespace {
 
 using Block = FigureBlock;
 
-// The game saves to two areas in turn: area 0 from block 0x08, area 1 from block 0x24.
-constexpr uint8_t kAreaStart[2] = {0x08, 0x24};
+// Offsets from an area's first block; each block is 16 bytes and every fourth block (a sector
+// trailer) holds no save data, so an area spans blocks 0..6 of its start.
+//   +0x00 u24 XP (Spyro's Adventure part, up to 33000)  +0x03 u16 gold  +0x05 u32 play time (s)
+//   +0x09 u8 sequence  +0x0E u16 header CRC
+//   +0x10 u16 upgrades  +0x13 u8 platforms  +0x14 u8 hat (Spyro's Adventure)
+//   +0x16 bit 0: the second area pair's XP counts
+//   +0x20, +0x40 nickname, UTF-16LE, 8 characters each
+//   +0x50 last placed: u8 minute, hour, day, month, u16 year  +0x5A u16 hero points
+// Second pair, from its first block:
+//   +0x02 u8 sequence  +0x03 u16 XP (Giants part, up to 63500)  +0x05 u8 hat (Giants)
+//   +0x08 u32 XP (Swap Force part)  +0x0C u8 hat (Swap Force, Trap Team)
+//   +0x0E u8 hat (SuperChargers on, its number minus 256: Enigma's 13 is hat 269, the game's
+//        "Gold Rusher-Zahnradkappe"; minus 255 gave its neighbour 268, SuperChargersRecomp #9)
+//   +0x56 u8 a creation crystal's battle class (Imaginators; block +5, byte 6). Found 2026-10-22
+//        from 54 premade crystals with their class in the file name: the one byte that is the
+//        same within each of the ten classes and different between them, in both copies.
+constexpr uint8_t kAreas[2] = {0x08, 0x24};
+constexpr uint8_t kExtraAreas[2] = {0x11, 0x2D};
 
 uint16_t ReadU16LE(const uint8_t* p) {
   return static_cast<uint16_t>(p[0]) | (static_cast<uint16_t>(p[1]) << 8);
 }
 
-// The Swap Force max-level table (supersedes earlier games' lower per-tier caps); total XP is
-// the sum of every generation's XP field once loaded into a game new enough to have added it.
+uint32_t ReadU32LE(const uint8_t* p) {
+  return uint32_t(p[0]) | (uint32_t(p[1]) << 8) | (uint32_t(p[2]) << 16) | (uint32_t(p[3]) << 24);
+}
+
+bool RawBlockEmpty(const FigureData& data, uint8_t block) {
+  const uint8_t* p = data.data() + size_t(block) * kBlockSize;
+  return std::all_of(p, p + kBlockSize, [](uint8_t b) { return b == 0; });
+}
+
+// The bytes of an area from its first block on (16 bytes per block, 0x70 in all), decrypted.
+std::array<uint8_t, 0x70> ReadArea(const FigureData& data, uint8_t start) {
+  std::array<uint8_t, 0x70> area{};
+  for (uint8_t i = 0; i < 7; ++i) {
+    const Block block = DecryptFigureBlock(data, uint8_t(start + i));
+    std::memcpy(area.data() + i * kBlockSize, block.data(), kBlockSize);
+  }
+  return area;
+}
+
+bool HeaderValid(const FigureData& data, uint8_t start) {
+  if (RawBlockEmpty(data, start)) return false;
+  Block header = DecryptFigureBlock(data, start);
+  const uint16_t stored = ReadU16LE(&header[0x0E]);
+  header[0x0E] = 0x05;
+  header[0x0F] = 0x00;
+  return stored == FigureCrc16(header.data(), header.size());
+}
+
+// Of two copies, the one whose sequence byte is one more than the other's is the newer.
+int Newer(uint8_t sequence0, uint8_t sequence1) {
+  return uint8_t(sequence0 + 1) == sequence1 ? 1 : 0;
+}
+
+// The Swap Force level table (supersedes earlier games' lower per-tier caps); total XP is the sum
+// of every generation's part once the figure has been in a game new enough to add it.
 constexpr std::array<uint32_t, 20> kLevelXpTable = {
     0,      1000,   2200,   3800,   6000,   9000,   13000,  18200,  24800,  33000,
     42700,  53900,  66600,  80800,  96500,  113700, 132400, 152600, 174300, 197500,
@@ -35,78 +86,124 @@ uint8_t LevelForXp(uint32_t total_xp) {
   return level;
 }
 
+std::string Utf16ToUtf8(const uint8_t* p, size_t max_chars) {
+  std::string out;
+  for (size_t i = 0; i < max_chars; ++i) {
+    const char16_t c = static_cast<char16_t>(ReadU16LE(p + 2 * i));
+    if (c == 0) break;
+    if (c < 0x80) {
+      out.push_back(static_cast<char>(c));
+    } else if (c < 0x800) {
+      out.push_back(static_cast<char>(0xC0 | (c >> 6)));
+      out.push_back(static_cast<char>(0x80 | (c & 0x3F)));
+    } else {
+      out.push_back(static_cast<char>(0xE0 | (c >> 12)));
+      out.push_back(static_cast<char>(0x80 | ((c >> 6) & 0x3F)));
+      out.push_back(static_cast<char>(0x80 | (c & 0x3F)));
+    }
+  }
+  return out;
+}
+
 }  // namespace
 
-std::optional<FigureStats> ParseFigureStats(const FigureData& data) {
-  const bool all_zero = std::all_of(data.begin(), data.end(), [](uint8_t b) { return b == 0; });
-  if (all_zero) return std::nullopt;
+int UpgradeCount(const FigureStats& stats) { return std::popcount(uint16_t(stats.upgrades & ~3u)); }
 
-  // Each area's first block has its own CRC16 (offset 0x0E, with that field itself replaced by
-  // the literal bytes 0x05,0x00 before computing -- confirmed against real dumps, not documented
-  // correctly in the community writeup this is sourced from), which tells us the decrypt -- and
-  // so the key derivation -- actually worked, before trusting gold or nickname from it. Byte 0x09
-  // counts saves; the area the game wrote last is the one one ahead of the other (mod 256).
-  std::optional<Block> head[2];
-  for (int i = 0; i < 2; ++i) {
-    const Block block = DecryptFigureBlock(data, kAreaStart[i]);
-    Block for_crc = block;
-    for_crc[0x0E] = 0x05;
-    for_crc[0x0F] = 0x00;
-    if (ReadU16LE(&block[0x0E]) == FigureCrc16(for_crc.data(), for_crc.size())) head[i] = block;
+int UpgradePath(const FigureStats& stats) {
+  if (!(stats.upgrades & 1)) return 0;
+  return (stats.upgrades & 2) ? 2 : 1;
+}
+
+std::optional<FigureStats> ParseFigureStats(const FigureData& data) {
+  const bool valid0 = HeaderValid(data, kAreas[0]);
+  const bool valid1 = HeaderValid(data, kAreas[1]);
+  if (!valid0 && !valid1) return std::nullopt;
+  int which = valid0 ? 0 : 1;
+  if (valid0 && valid1) {
+    which = Newer(DecryptFigureBlock(data, kAreas[0])[0x09],
+                  DecryptFigureBlock(data, kAreas[1])[0x09]);
   }
-  if (!head[0] && !head[1]) return std::nullopt;
-  int newest = head[0] ? 0 : 1;
-  if (head[0] && head[1] && static_cast<uint8_t>((*head[1])[0x09] - (*head[0])[0x09]) == 1) {
-    newest = 1;
-  }
-  const uint8_t start = kAreaStart[newest];
-  const Block& area = *head[newest];
+  const auto area = ReadArea(data, kAreas[which]);
 
   FigureStats stats{};
   stats.gold = ReadU16LE(&area[0x03]);
-
-  // Nickname: UTF-16LE, null-terminated, spread across the area's third and fourth blocks
-  // (start + 2, start + 4; start + 3 is a sector trailer), up to 15 characters (30 bytes).
-  const Block nick_a = DecryptFigureBlock(data, start + 2);
-  const Block nick_b = DecryptFigureBlock(data, start + 4);
-  std::array<uint8_t, kBlockSize * 2> nick_bytes{};
-  std::memcpy(nick_bytes.data(), nick_a.data(), kBlockSize);
-  std::memcpy(nick_bytes.data() + kBlockSize, nick_b.data(), kBlockSize);
-  std::u16string nickname_u16;
-  for (size_t i = 0; i + 1 < nick_bytes.size(); i += 2) {
-    const char16_t c = static_cast<char16_t>(ReadU16LE(&nick_bytes[i]));
-    if (c == 0) break;
-    nickname_u16.push_back(c);
+  stats.play_seconds = ReadU32LE(&area[0x05]);
+  stats.upgrades = ReadU16LE(&area[0x10]);
+  stats.platforms = area[0x13];
+  stats.hat = area[0x14];
+  stats.hero_points = ReadU16LE(&area[0x5A]);
+  // Imaginators' creation crystals keep their Imaginator's own name there, and their second area
+  // pair holds the creation, not the later games' hats (seen on 54 premade crystals: the names as
+  // 8-bit text, "DARK KNIGHT", up to 32 characters; hat bytes all over the range).
+  const SkylanderInfo* sky = FindSkylander(ReadFigureId(data), ReadFigureVariant(data));
+  const bool crystal = sky && sky->category == "Creation Crystals";
+  // The nickname's two halves sit in blocks +2 and +4 (block +3 is the sector trailer).
+  std::array<uint8_t, 0x20> nick{};
+  std::memcpy(nick.data(), &area[0x20], 0x10);
+  std::memcpy(nick.data() + 0x10, &area[0x40], 0x10);
+  if (crystal) {
+    for (uint8_t c : nick) {
+      if (c == 0) break;
+      if (c >= 0x20 && c < 0x7F) stats.nickname.push_back(char(c));
+    }
+  } else {
+    stats.nickname = Utf16ToUtf8(nick.data(), 16);
   }
-  // Narrow UTF-16 to UTF-8 by hand: nicknames are short and this avoids pulling in a full
-  // Unicode conversion dependency into this SDK-independent library for one field.
-  std::string nickname_utf8;
-  for (char16_t c : nickname_u16) {
-    if (c < 0x80) {
-      nickname_utf8.push_back(static_cast<char>(c));
-    } else if (c < 0x800) {
-      nickname_utf8.push_back(static_cast<char>(0xC0 | (c >> 6)));
-      nickname_utf8.push_back(static_cast<char>(0x80 | (c & 0x3F)));
-    } else {
-      nickname_utf8.push_back(static_cast<char>(0xE0 | (c >> 12)));
-      nickname_utf8.push_back(static_cast<char>(0x80 | ((c >> 6) & 0x3F)));
-      nickname_utf8.push_back(static_cast<char>(0x80 | (c & 0x3F)));
+  const FigureDate date{ReadU16LE(&area[0x54]), area[0x53], area[0x52], area[0x51], area[0x50]};
+  if (date.year >= 2011 && date.year < 2100 && date.month >= 1 && date.month <= 12 &&
+      date.day >= 1 && date.day <= 31 && date.hour < 24 && date.minute < 60) {
+    stats.last_played = date;
+  }
+
+  uint32_t xp = uint32_t(area[0x00]) | (uint32_t(area[0x01]) << 8) | (uint32_t(area[0x02]) << 16);
+  // The second pair has its own sequence; an empty copy (raw zeros) never counts.
+  const bool extra0 = !RawBlockEmpty(data, kExtraAreas[0]);
+  const bool extra1 = !RawBlockEmpty(data, kExtraAreas[1]);
+  if (extra0 || extra1) {
+    const Block e0 = DecryptFigureBlock(data, kExtraAreas[0]);
+    const Block e1 = DecryptFigureBlock(data, kExtraAreas[1]);
+    const bool newer1 = !extra0 || (extra1 && Newer(e0[0x02], e1[0x02]));
+    const Block& extra = newer1 ? e1 : e0;
+    stats.creation_class = ReadArea(data, kExtraAreas[newer1 ? 1 : 0])[0x56];
+    if (area[0x16] & 1) xp += ReadU16LE(&extra[0x03]) + ReadU32LE(&extra[0x08]);
+    // The newest game's hat slot that is set wins.
+    if (crystal) {
+      // (no hat slot known on a crystal)
+    } else if (extra[0x0E]) {
+      stats.hat = uint16_t(extra[0x0E] + 256);
+    } else if (extra[0x0C]) {
+      stats.hat = extra[0x0C];
+    } else if (extra[0x05]) {
+      stats.hat = extra[0x05];
     }
   }
-  stats.nickname = std::move(nickname_utf8);
-
-  // Level: a single 24-bit LE value at the area's offset 0x00 (bytes 0x00-0x02), immediately before
-  // gold at 0x03 -- confirmed against the independent SkyReader project's Skylander::getXP(),
-  // which reads exactly these three bytes the same way. Earlier revisions of this function tried
-  // splitting XP across a separate, unchecksummed "area 2" block per a community writeup that
-  // turned out to be wrong for this game; that area 2 read is gone now. This field lives in the
-  // same already-checksum-verified area block gold does, so it's exactly as trustworthy.
-  const uint32_t total_xp = static_cast<uint32_t>(area[0x00]) |
-                            (static_cast<uint32_t>(area[0x01]) << 8) |
-                            (static_cast<uint32_t>(area[0x02]) << 16);
-  stats.level = LevelForXp(total_xp);
-
+  // Vehicles wear no hat: those bytes mean something else on them (Shield Striker showed a
+  // "Kampfhut", SuperChargersRecomp #9).
+  if (sky && (sky->category == "Vehicles" || sky->category == "Vehicle Variants")) stats.hat = 0;
+  stats.xp = xp;
+  stats.level = LevelForXp(xp);
+  stats.level_xp = kLevelXpTable[stats.level - 1];
+  stats.next_xp = stats.level < kLevelXpTable.size() ? kLevelXpTable[stats.level] : 0;
   return stats;
+}
+
+bool SetFigureGold(FigureData& data, uint16_t gold) {
+  bool changed = false;
+  for (const uint8_t start : kAreas) {
+    if (!HeaderValid(data, start)) continue;
+    Block header = DecryptFigureBlock(data, start);
+    header[0x03] = uint8_t(gold);
+    header[0x04] = uint8_t(gold >> 8);
+    header[0x0E] = 0x05;
+    header[0x0F] = 0x00;
+    const uint16_t crc = FigureCrc16(header.data(), header.size());
+    header[0x0E] = uint8_t(crc);
+    header[0x0F] = uint8_t(crc >> 8);
+    const Block encrypted = EncryptFigureBlock(data, start, header);
+    std::memcpy(data.data() + size_t(start) * kBlockSize, encrypted.data(), kBlockSize);
+    changed = true;
+  }
+  return changed;
 }
 
 }  // namespace skylanders::portal

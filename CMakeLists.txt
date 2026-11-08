@@ -7,8 +7,27 @@
 cmake_minimum_required(VERSION 3.25)
 project(skylanders_portal LANGUAGES CXX C)
 
+# skylanders_portal_figures: only the figure files (catalog, names, elements, stats), for programs
+# without the SDK such as the Core of Light launcher. On Windows it needs no SDK tree: AES and MD5
+# come from Windows (CNG). Built whenever REXSDK_DIR isn't set.
+set(SKYLANDERS_PORTAL_FIGURE_SOURCES
+    src/portal/figure_catalog.cpp
+    src/portal/figure_crypto.cpp
+    src/portal/figure_file.cpp
+    src/portal/figure_info.cpp
+    src/portal/figure_stats.cpp
+    src/portal/trap_villain.cpp
+)
 if(NOT REXSDK_DIR)
-    message(FATAL_ERROR "skylanders-portal: set REXSDK_DIR to a rexglue-sdk source tree")
+    if(NOT WIN32)
+        message(FATAL_ERROR "skylanders-portal: set REXSDK_DIR to a rexglue-sdk source tree")
+    endif()
+    add_library(skylanders_portal_figures STATIC ${SKYLANDERS_PORTAL_FIGURE_SOURCES})
+    target_include_directories(skylanders_portal_figures PUBLIC src)
+    target_compile_definitions(skylanders_portal_figures PRIVATE SKYLANDERS_PORTAL_CRYPTO_CNG)
+    target_link_libraries(skylanders_portal_figures PRIVATE bcrypt)
+    target_compile_features(skylanders_portal_figures PUBLIC cxx_std_23)
+    return()
 endif()
 
 add_library(skylanders_portal_core STATIC
@@ -16,6 +35,7 @@ add_library(skylanders_portal_core STATIC
     src/portal/figure_catalog.cpp
     src/portal/figure_crypto.cpp
     src/portal/figure_file.cpp
+    src/portal/figure_info.cpp
     src/portal/figure_stats.cpp
     src/portal/g726.cpp
     src/portal/portal_mode.cpp
@@ -37,7 +57,7 @@ if(SKYLANDERS_PORTAL_TESTS)
     enable_testing()
     foreach(t portal_framing_test portal_mode_test software_portal_test figure_file_test
               figure_catalog_test figure_stats_test audio_test xam_bridge_test
-              trap_villain_test g726_test)
+              trap_villain_test g726_test figure_info_test)
         add_executable(skylanders_${t} tests/${t}.cpp)
         target_include_directories(skylanders_${t} PRIVATE tests)
         target_link_libraries(skylanders_${t} PRIVATE skylanders_portal_core)
