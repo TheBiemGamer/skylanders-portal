@@ -226,6 +226,7 @@ class UsbHotPlugPortal final : public skylanders::portal::PortalDevice {
 
   void Write(const skylanders::portal::Report& report) override {
     MaybeReconnect();
+    if (report[0] == 'A') last_activate_ = report[1];  // replayed to a replugged portal
     if (current_) current_->Write(report);
   }
 
@@ -235,8 +236,21 @@ class UsbHotPlugPortal final : public skylanders::portal::PortalDevice {
 
   skylanders::portal::Report Read() override {
     MaybeReconnect();
-    skylanders::portal::Report report =
-        current_ ? current_->Read() : skylanders::portal::Report{};
+    if (!current_) {
+      // Unplugged: every slot empty, so the game takes the figures off instead of keeping them.
+      // Only once a portal was connected; without one the game keeps saying there is no portal.
+      if (!was_connected_) return {};
+      skylanders::portal::Report empty{};
+      empty[0] = 0x53;
+      empty[5] = offline_counter_++;
+      empty[6] = last_activate_.value_or(0) ? 1 : 0;
+      return empty;
+    }
+    skylanders::portal::Report report = current_->Read();
+    if (swallow_replies_ > 0 && (report[0] == 0x52 || report[0] == 0x41)) {
+      --swallow_replies_;  // the answer to our own reset/activate on reconnect, not the game's
+      report = {};
+    }
     ApplyAnnounceStep(report, phase_, added_reports_);
     return report;
   }
@@ -249,6 +263,20 @@ class UsbHotPlugPortal final : public skylanders::portal::PortalDevice {
       phase_ = AnnouncePhase::kForceEmpty;
       added_reports_ = 0;
       REXLOG_INFO("Portal: usb device connected");
+      if (was_connected_ && last_activate_) {
+        // A replugged portal powers up switched off, and the game never noticed it was gone, so it
+        // won't reset and activate it again: do that for it, with the game's last activate.
+        skylanders::portal::Report reset{};
+        reset[0] = 'R';
+        current_->Write(reset);
+        skylanders::portal::Report activate{};
+        activate[0] = 'A';
+        activate[1] = *last_activate_;
+        current_->Write(activate);
+        swallow_replies_ = 2;
+        REXLOG_INFO("Portal: reset and activated the replugged usb portal");
+      }
+      was_connected_ = true;
       return;
     }
     // No HID portal: maybe an Xbox 360 one on WinUSB. Once it is set, the XAM handler talks to it
@@ -281,6 +309,10 @@ class UsbHotPlugPortal final : public skylanders::portal::PortalDevice {
   AnnouncePhase phase_ = AnnouncePhase::kForceEmpty;
   int added_reports_ = 0;
   std::chrono::steady_clock::time_point last_attempt_{};
+  bool was_connected_ = false;                // a portal was open at some point this run
+  std::optional<uint8_t> last_activate_;      // argument of the game's last 'A' command
+  int swallow_replies_ = 0;                   // replies to our reconnect reset/activate still due
+  uint8_t offline_counter_ = 0;               // status counter while unplugged
 };
 
 // Keeps a copy of a figure file before the game first saves over it in this run, and again when the

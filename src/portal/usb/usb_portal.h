@@ -2,6 +2,7 @@
 
 #include <array>
 #include <atomic>
+#include <deque>
 #include <cstdint>
 #include <mutex>
 #include <optional>
@@ -145,6 +146,12 @@ class UsbPortal final : public PortalDevice {
   std::atomic<int> dumping_slot_{-1};
   std::atomic<bool> last_active_{true};    // last real 'active' status byte seen
   std::atomic<uint8_t> status_counter_{0};  // running counter for synthetic status frames
+  // Read()'s drained input (see Read()); guarded by io_mutex_. Per portal, so a replugged portal
+  // never passes on replies queued from the old one.
+  std::deque<Report> pending_replies_;
+  Report newest_status_{};
+  bool have_status_ = false;
+  uint32_t added_mask_ = 0;  // bit per slot: a dropped frame reported "added"
 };
 
 }  // namespace skylanders::portal
