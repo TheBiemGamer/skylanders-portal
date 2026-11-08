@@ -165,6 +165,10 @@ void PortalOverlayDialog::OnDraw(ImGuiIO& io) {
             ImGui::Text("  Level %u, %u gold (\"%s\")", static_cast<unsigned>(stats->level),
                         static_cast<unsigned>(stats->gold), stats->nickname.c_str());
           }
+          if (stats->next_xp > stats->xp) {
+            ImGui::TextDisabled("  %u XP to level %u", static_cast<unsigned>(stats->next_xp - stats->xp),
+                                static_cast<unsigned>(stats->level) + 1);
+          }
         } else {
           ImGui::TextDisabled("  (level/gold/nickname not read yet)");
         }
