@@ -20,6 +20,8 @@
 #include "portal/portal_device.h"
 #include "portal/portal_mode.h"
 #include "portal/software/software_portal.h"
+#include "portal/text.h"
+#include "portal/utf8_path.h"
 #include "portal/usb/usb_portal.h"
 #include "portal/xam_bridge.h"
 #include "portal/xbox_frame.h"
@@ -54,6 +56,12 @@ std::atomic<skylanders::portal::UsbPortal*> g_usb_portal{nullptr};
 
 // Set once a game hook has sent clean speaker PCM (SubmitSpeakerPcm).
 std::atomic<bool> g_speaker_pcm_tap{false};
+
+// The last failed figure save (see FigureSaveError). Written by the game's portal thread, read by
+// the UI thread.
+std::mutex g_save_error_mutex;
+std::string g_save_error;
+std::filesystem::path g_save_error_file;
 
 // Forwards the game's XamInputNonControllerGetRaw/SetRaw(Ex) calls (through the SDK's handler
 // hook) to whichever portal is active right now. g_portal is re-read on every call, so a live
@@ -91,31 +99,6 @@ class XamPortalHandler final : public rex::kernel::xam::NonControllerHandler {
 
 XamPortalHandler g_xam_handler;
   // lives for the whole process, like the portals themselves
-
-// portal_figure/portal_figures_dir arrive as UTF-8; convert explicitly so non-ANSI characters
-// survive (path::string() would throw for characters outside the ANSI code page).
-std::filesystem::path Utf8ToPath(const std::string& utf8) {
-  const std::u8string u8(reinterpret_cast<const char8_t*>(utf8.data()), utf8.size());
-  return std::filesystem::path(u8);
-}
-
-// Mirrors UsbPortal's own local HexBytes helper (usb_portal.cpp) -- duplicated rather than shared
-// across files, matching this project's existing style for small helpers backing a temporary
-// diagnostic feature. Needed here, not in software_portal.cpp/.h, because SoftwarePortal
-// deliberately has no ReXGlue dependency of its own (see CMakeLists.txt's "Portal core (no
-// ReXGlue dependency)" library) and so cannot call REXLOG_TRACE directly; this file does link
-// ReXGlue, so it is where SoftwarePortal::SetResearchLogCallback gets wired up to actually log.
-std::string HexBytes(const uint8_t* data, size_t n) {
-  static constexpr char kHex[] = "0123456789abcdef";
-  std::string out;
-  out.reserve(n * 3);
-  for (size_t i = 0; i < n; ++i) {
-    if (i) out += ' ';
-    out += kHex[data[i] >> 4];
-    out += kHex[data[i] & 0xF];
-  }
-  return out;
-}
 
 // Status-report announce dance shared by TransitioningPortal and UsbHotPlugPortal below: mirrors
 // SoftwarePortal's own activate/deactivate announce dance (software_portal.cpp: kAddedReports) --
@@ -247,7 +230,7 @@ class UsbHotPlugPortal final : public skylanders::portal::PortalDevice {
 };
 
 // Builds a ready-to-use SoftwarePortal, wired the same way regardless of whether this is the
-// startup portal or a live switch back into software mode from the F4 menu.
+// startup portal or a live switch back into software mode from the settings (F4).
 skylanders::portal::SoftwarePortal* SetUpSoftwarePortal() {
   auto* software = new skylanders::portal::SoftwarePortal();  // intentionally never freed, see below
   // The source path each slot's figure was loaded from (if any) is tracked by SoftwarePortal
@@ -256,19 +239,29 @@ skylanders::portal::SoftwarePortal* SetUpSoftwarePortal() {
   software->SetWriteCallback([](int slot, const skylanders::portal::FigureData& data,
                                 const std::optional<std::filesystem::path>& source) {
     if (!source) return;  // this slot's figure did not come from a file
-    if (skylanders::portal::SaveFigureFileAtomic(*source, data)) {
+    const bool saved = skylanders::portal::SaveFigureFileAtomic(*source, data);
+    std::lock_guard<std::mutex> lock(g_save_error_mutex);
+    if (saved) {
       REXLOG_INFO("Portal: saved changes back to slot {}'s figure file", slot);
+      if (g_save_error_file == *source) {
+        g_save_error.clear();
+        g_save_error_file.clear();
+      }
     } else {
       REXLOG_WARN("Portal: could not save changes back to slot {}'s figure file", slot);
+      g_save_error = "Could not save " + skylanders::Utf8Path(source->filename()) +
+                     ", so its progress is not being kept. Check that the file is not read-only "
+                     "or open in another program.";
+      g_save_error_file = *source;
     }
   });
   // Trace-log every 'Q'/'W' figure block, matching UsbPortal's own research logging, so both
   // backends produce comparable "Portal figure research: ..." lines for the future offset
-  // research phase (see docs/portal-protocol.md and figure_stats.h).
+  // research phase (see figure_stats.h).
   software->SetResearchLogCallback([](const char* op, int slot, int block, const uint8_t* data,
                                       size_t n) {
     REXLOG_TRACE("Portal figure research: software slot {} block {} {} -> {}", slot, block, op,
-                HexBytes(data, n));
+                skylanders::HexBytes(data, n));
   });
   if (REXCVAR_GET(portal_audio) != "off") {
     // Opened once and kept for the whole process, like the portals themselves.
@@ -345,7 +338,7 @@ void InstallPortal(const std::filesystem::path& default_figures_dir) {
 
   // The startup-only --portal_figure/--portal_test_figure flags only make sense once, for the
   // portal this process actually boots into -- a later live switch back to software mode starts
-  // empty, same as if you'd launched straight into it (see docs/architecture.md, "Figures").
+  // empty, same as if you'd launched straight into it.
   if (portal::SoftwarePortal* software = g_software_portal.load()) {
     const std::string figure_path = REXCVAR_GET(portal_figure);
     if (!figure_path.empty()) {
@@ -371,12 +364,26 @@ void InstallPortal(const std::filesystem::path& default_figures_dir) {
   rex::kernel::xam::RegisterNonControllerHandler(&g_xam_handler);
 }
 
-bool PlaceFigureFromFile(int slot, const std::filesystem::path& path) {
+bool PlaceFigureFromFile(int slot, const std::filesystem::path& path, std::string* error) {
+  auto Fail = [&](std::string msg) {
+    if (error) *error = std::move(msg);
+    return false;
+  };
   portal::SoftwarePortal* software = g_software_portal.load();
-  if (!software) return false;
+  if (!software) return Fail("The virtual portal isn't active.");
+  const std::string name = Utf8Path(path.filename());
   auto figure = portal::LoadFigureFile(path);
-  if (!figure) return false;
-  return software->PlaceFigure(slot, *figure, path);
+  if (!figure) {
+    std::error_code ec;
+    if (!std::filesystem::exists(path, ec)) return Fail(name + " no longer exists. Press Rescan.");
+    return Fail(name + " is not a figure file: it must be exactly " +
+                std::to_string(portal::kFigureSize) + " bytes.");
+  }
+  if (const int holder = software->SlotWithSource(path); holder != -1 && holder != slot) {
+    return Fail(name + " is already on the portal, in slot " + std::to_string(holder) + ".");
+  }
+  if (!software->PlaceFigure(slot, *figure, path)) return Fail("Could not place " + name + ".");
+  return true;
 }
 
 bool RemoveFigureFromSlot(int slot) {
@@ -385,42 +392,50 @@ bool RemoveFigureFromSlot(int slot) {
   return software->RemoveFigure(slot);
 }
 
-bool CreateAndPlaceFigure(int slot, const portal::SkylanderInfo& sky) {
+bool CreateAndPlaceFigure(int slot, const portal::SkylanderInfo& sky, std::string* error) {
+  auto Fail = [&](std::string msg) {
+    if (error) *error = std::move(msg);
+    return false;
+  };
   portal::SoftwarePortal* software = g_software_portal.load();
-  if (!software) return false;
+  if (!software) return Fail("The virtual portal isn't active.");
   const std::string dir_utf8 = REXCVAR_GET(portal_figures_dir);
-  if (dir_utf8.empty()) return false;
+  if (dir_utf8.empty()) return Fail("No figures folder is set.");
 
   const std::filesystem::path game_dir = Utf8ToPath(dir_utf8) / std::string(sky.game);
   std::error_code ec;
   std::filesystem::create_directories(game_dir, ec);
-  if (ec) return false;
+  if (ec) return Fail("Could not create the folder " + Utf8Path(game_dir) + ".");
 
   const std::filesystem::path path = portal::UniqueFigurePath(game_dir, sky.name);
   const portal::FigureData data = portal::CreateBlankFigure(sky.id, sky.variant);
-  if (!portal::SaveFigureFileAtomic(path, data)) return false;
-  return PlaceFigureFromFile(slot, path);
+  if (!portal::SaveFigureFileAtomic(path, data)) return Fail("Could not write " + Utf8Path(path) + ".");
+  return PlaceFigureFromFile(slot, path, error);
 }
 
-bool CreateAndPlaceVillainTrap(int slot, const portal::TrapVillain& villain) {
+bool CreateAndPlaceVillainTrap(int slot, const portal::TrapVillain& villain, std::string* error) {
+  auto Fail = [&](std::string msg) {
+    if (error) *error = std::move(msg);
+    return false;
+  };
   portal::SoftwarePortal* software = g_software_portal.load();
-  if (!software) return false;
+  if (!software) return Fail("The virtual portal isn't active.");
   const std::string dir_utf8 = REXCVAR_GET(portal_figures_dir);
-  if (dir_utf8.empty()) return false;
+  if (dir_utf8.empty()) return Fail("No figures folder is set.");
 
   const uint16_t trap_variant = portal::DefaultTrapVariant(villain.trap_id);
-  if (!trap_variant) return false;
-  const auto data = portal::CreateTrapWithVillain(villain.trap_id, trap_variant, villain);
-  if (!data) return false;
+  const auto data = trap_variant ? portal::CreateTrapWithVillain(villain.trap_id, trap_variant, villain)
+                                 : std::nullopt;
+  if (!data) return Fail("No trap is known for " + std::string(villain.name) + ".");
 
   const std::filesystem::path game_dir = Utf8ToPath(dir_utf8) / "Trap Team";
   std::error_code ec;
   std::filesystem::create_directories(game_dir, ec);
-  if (ec) return false;
+  if (ec) return Fail("Could not create the folder " + Utf8Path(game_dir) + ".");
 
   const std::filesystem::path path = portal::UniqueFigurePath(game_dir, villain.name);
-  if (!portal::SaveFigureFileAtomic(path, *data)) return false;
-  return PlaceFigureFromFile(slot, path);
+  if (!portal::SaveFigureFileAtomic(path, *data)) return Fail("Could not write " + Utf8Path(path) + ".");
+  return PlaceFigureFromFile(slot, path, error);
 }
 
 portal::SoftwarePortal* GetSoftwarePortal() { return g_software_portal.load(); }
@@ -478,7 +493,15 @@ void SubmitSpeakerPcm(std::span<const int16_t> pcm) {
   if (portal::SoftwarePortal* software = g_software_portal.load()) software->WriteAudio(pcm);
 }
 
+std::string FigureSaveError() {
+  std::lock_guard<std::mutex> lock(g_save_error_mutex);
+  return g_save_error;
+}
+
 void RegisterPortalOverlay(rex::ui::ImGuiDrawer* drawer) {
+  // Never freed, like the portals: destroying it during static destruction would touch a drawer
+  // that is already gone.
+  new SaveErrorBanner(drawer);
   static std::unique_ptr<PortalOverlayDialog> overlay;  // UI thread only
   rex::ui::RegisterBind("bind_portal_overlay", "F6", "Toggle the portal figure picker", [drawer] {
     if (overlay) {

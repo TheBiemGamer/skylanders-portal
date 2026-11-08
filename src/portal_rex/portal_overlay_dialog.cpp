@@ -1,10 +1,12 @@
 #include "portal_rex/portal_overlay_dialog.h"
 
 #include <algorithm>
+#include <array>
 #include <string_view>
 #include <cctype>
 #include <filesystem>
 #include <system_error>
+#include <thread>
 
 #include <imgui.h>
 #include <rex/cvar.h>
@@ -19,22 +21,12 @@
 #include "portal/software/software_portal.h"
 #include "portal/trap_villain.h"
 #include "portal/usb/usb_portal.h"
-#include "portal_rex/utf8_path.h"
+#include "portal/text.h"
+#include "portal/utf8_path.h"
 
 namespace skylanders {
 
 namespace {
-
-std::string Lower(std::string s) {
-  std::transform(s.begin(), s.end(), s.begin(),
-                 [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-  return s;
-}
-
-std::filesystem::path Utf8ToPath(const std::string& utf8) {
-  const std::u8string u8(reinterpret_cast<const char8_t*>(utf8.data()), utf8.size());
-  return std::filesystem::path(u8);
-}
 
 // "Slot N: <figure name>" or "Slot N: empty".
 std::string SlotLabel(portal::SoftwarePortal* software, int slot) {
@@ -86,12 +78,55 @@ void PortalOverlayDialog::RefreshChangedFigureStats() {
   }
 }
 
+void SaveErrorBanner::OnDraw(ImGuiIO& io) {
+  const std::string error = FigureSaveError();
+  if (error.empty()) return;
+  ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x * 0.5f, 16.0f), ImGuiCond_Always,
+                          ImVec2(0.5f, 0.0f));
+  ImGui::SetNextWindowBgAlpha(0.92f);
+  ImGui::Begin("##figure_save_error", nullptr,
+               ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize |
+                   ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_NoSavedSettings |
+                   ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoNav);
+  ImGui::PushTextWrapPos(io.DisplaySize.x * 0.6f);
+  ImGui::TextColored(ImVec4(1.0f, 0.55f, 0.5f, 1.0f), "%s", error.c_str());
+  ImGui::PopTextWrapPos();
+  ImGui::End();
+}
+
+void PortalOverlayDialog::SetStatus(std::string message, bool is_error) {
+  status_ = std::move(message);
+  status_is_error_ = is_error;
+}
+
+void PortalOverlayDialog::DrawStatus() const {
+  if (status_.empty()) return;
+  if (status_is_error_) ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.55f, 0.5f, 1.0f));
+  ImGui::TextWrapped("%s", status_.c_str());
+  if (status_is_error_) ImGui::PopStyleColor();
+  ImGui::Separator();
+}
+
 void PortalOverlayDialog::OnDraw(ImGuiIO& io) {
   (void)io;
   ImGui::SetNextWindowSize(ImVec2(480, 520), ImGuiCond_FirstUseEver);
   if (!ImGui::Begin("Portal of Power", nullptr, ImGuiWindowFlags_NoCollapse)) {
     ImGui::End();
     return;
+  }
+
+  if (dump_job_) {
+    std::lock_guard<std::mutex> lock(dump_job_->mu);
+    if (dump_job_->done) {
+      SetStatus(dump_job_->message, !dump_job_->ok);
+      dump_job_.reset();
+    }
+  }
+  if (dump_job_) {
+    ImGui::TextWrapped("Dumping the figure in slot %d...", dump_job_->slot);
+    ImGui::Separator();
+  } else {
+    DrawStatus();
   }
 
   if (portal::UsbPortal* usb = GetUsbPortal()) {
@@ -134,27 +169,28 @@ void PortalOverlayDialog::OnDraw(ImGuiIO& io) {
           ImGui::TextDisabled("  (level/gold/nickname not read yet)");
         }
         ImGui::PushID(slot);
+        ImGui::BeginDisabled(dump_job_ != nullptr);
         if (ImGui::Button("Dump to file")) {
-          std::filesystem::path saved;
-          std::string err;
-          if (DumpRealFigureToFile(slot, &saved, &err)) {
-            usb_dump_message_ = "Saved: " + Utf8Path(saved);
-          } else {
-            usb_dump_message_ = "Dump failed: " + err;
-          }
+          dump_job_ = std::make_shared<DumpJob>();
+          dump_job_->slot = slot;
+          std::thread([job = dump_job_, slot] {
+            std::filesystem::path saved;
+            std::string err;
+            const bool ok = DumpRealFigureToFile(slot, &saved, &err);
+            std::lock_guard<std::mutex> lock(job->mu);
+            job->ok = ok;
+            job->message = ok ? "Saved: " + Utf8Path(saved) : "Dump failed: " + err;
+            job->done = true;
+          }).detach();
         }
-        if (ImGui::IsItemHovered()) {
+        ImGui::EndDisabled();
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
           ImGui::SetTooltip(
               "Reads this figure's full data and saves it as a .dump file under your figures "
-              "folder. Briefly disconnects this slot from the game -- it will look like the "
-              "figure was taken off the portal while this runs, then look like it was put back. "
+              "folder. The game pauses its portal for about half a second while this runs. "
               "Nothing changes on the physical toy.");
         }
         ImGui::PopID();
-      }
-      if (!usb_dump_message_.empty()) {
-        ImGui::Separator();
-        ImGui::TextWrapped("%s", usb_dump_message_.c_str());
       }
     }
     ImGui::End();
@@ -171,8 +207,8 @@ void PortalOverlayDialog::OnDraw(ImGuiIO& io) {
   portal::SoftwarePortal* software = GetSoftwarePortal();
   if (!software) {
     ImGui::TextWrapped(
-        "No software portal is active (portal_mode is not 'software'). Start the game with "
-        "--portal_mode software to use the figure picker.");
+        "The virtual portal is off. Set Portal mode to 'software' in the settings (F4) to use "
+        "the figure picker.");
     ImGui::End();
     return;
   }
@@ -192,7 +228,10 @@ void PortalOverlayDialog::OnDraw(ImGuiIO& io) {
   ImGui::SameLine();
   const bool has_figure = software->Figure(selected_slot_).has_value();
   ImGui::BeginDisabled(!has_figure);
-  if (ImGui::Button("Remove")) RemoveFigureFromSlot(selected_slot_);
+  if (ImGui::Button("Remove")) {
+    RemoveFigureFromSlot(selected_slot_);
+    SetStatus({}, false);
+  }
   ImGui::EndDisabled();
 
   ImGui::Separator();
@@ -219,9 +258,15 @@ void PortalOverlayDialog::OnDraw(ImGuiIO& io) {
         ImGui::TextUnformatted(std::string(villain.name).c_str());
         ImGui::SameLine(ImGui::GetWindowWidth() - 80);
         if (ImGui::Button("Create")) {
-          if (!CreateAndPlaceVillainTrap(selected_slot_, villain)) {
-            REXLOG_WARN("Portal overlay: could not create a trap holding '{}'", villain.name);
+          std::string err;
+          if (!CreateAndPlaceVillainTrap(selected_slot_, villain, &err)) {
+            REXLOG_WARN("Portal overlay: could not create a trap holding '{}': {}", villain.name,
+                        err);
+            SetStatus(err, true);
           } else {
+            SetStatus("Created " + std::string(villain.name) + " in slot " +
+                          std::to_string(selected_slot_) + ".",
+                      false);
             Rescan();
             creating_ = false;
           }
@@ -276,9 +321,14 @@ void PortalOverlayDialog::OnDraw(ImGuiIO& io) {
       ImGui::TextUnformatted(std::string(sky.name).c_str());
       ImGui::SameLine(ImGui::GetWindowWidth() - 80);
       if (ImGui::Button("Create")) {
-        if (!CreateAndPlaceFigure(selected_slot_, sky)) {
-          REXLOG_WARN("Portal overlay: could not create '{}'", sky.name);
+        std::string err;
+        if (!CreateAndPlaceFigure(selected_slot_, sky, &err)) {
+          REXLOG_WARN("Portal overlay: could not create '{}': {}", sky.name, err);
+          SetStatus(err, true);
         } else {
+          SetStatus("Created " + std::string(sky.name) + " in slot " +
+                        std::to_string(selected_slot_) + ".",
+                    false);
           Rescan();
           creating_ = false;
         }
@@ -327,6 +377,16 @@ void PortalOverlayDialog::OnDraw(ImGuiIO& io) {
     return;
   }
 
+  // Which file each slot holds, so a file already on the portal shows its slot instead of Place.
+  std::array<std::optional<std::filesystem::path>, portal::kMaxFigures> on_portal;
+  for (int i = 0; i < portal::kMaxFigures; ++i) on_portal[i] = software->Source(i);
+  auto slot_holding = [&on_portal](const std::filesystem::path& p) {
+    for (int i = 0; i < portal::kMaxFigures; ++i) {
+      if (on_portal[i] == p) return i;
+    }
+    return -1;
+  };
+
   const std::string filter = Lower(filter_);
   ImGui::BeginChild("figure_list", ImVec2(0, 0), true);
   std::string last_game;
@@ -355,9 +415,15 @@ void PortalOverlayDialog::OnDraw(ImGuiIO& io) {
       }
     }
     ImGui::SameLine(ImGui::GetWindowWidth() - 80);
-    if (ImGui::Button("Place")) {
-      if (!PlaceFigureFromFile(selected_slot_, entry.path)) {
-        REXLOG_WARN("Portal overlay: could not place '{}'", entry.path.string());
+    if (const int holder = slot_holding(entry.path); holder != -1) {
+      ImGui::TextDisabled("Slot %d", holder);
+    } else if (ImGui::Button("Place")) {
+      std::string err;
+      if (!PlaceFigureFromFile(selected_slot_, entry.path, &err)) {
+        REXLOG_WARN("Portal overlay: could not place '{}': {}", Utf8Path(entry.path), err);
+        SetStatus(err, true);
+      } else {
+        SetStatus({}, false);
       }
     }
     ImGui::PopID();

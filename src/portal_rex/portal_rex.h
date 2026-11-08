@@ -40,8 +40,10 @@ void InstallPortal(const std::filesystem::path& default_figures_dir);
 
 // Loads the figure at `path` and places it in `slot`; future writes to that slot save back to
 // `path`, replacing any earlier file that slot saved to. Returns false, and changes nothing, if
-// there is no active software portal or `path` cannot be loaded as a figure.
-bool PlaceFigureFromFile(int slot, const std::filesystem::path& path);
+// there is no active software portal, `path` cannot be loaded as a figure, or it is already on
+// the portal in another slot. `error`, if given, then says why, in a sentence for the player.
+bool PlaceFigureFromFile(int slot, const std::filesystem::path& path,
+                         std::string* error = nullptr);
 
 // Removes the figure from `slot`, if any, and forgets what file it was saving to. Returns false if
 // there is no active software portal or the slot was already empty.
@@ -51,18 +53,20 @@ bool RemoveFigureFromSlot(int slot);
 // game subfolder if needed; an existing file of that name is never overwritten -- a " (2)", " (3)"
 // suffix is added instead), then places it into `slot` exactly like PlaceFigureFromFile. Returns
 // false, and creates nothing, if there is no active software portal, portal_figures_dir is unset,
-// or the folder can't be created.
-bool CreateAndPlaceFigure(int slot, const portal::SkylanderInfo& sky);
+// or the folder can't be created; `error`, if given, then says why.
+bool CreateAndPlaceFigure(int slot, const portal::SkylanderInfo& sky,
+                          std::string* error = nullptr);
 
 // Like CreateAndPlaceFigure, but a Trap Team trap holding `villain`: the first crystal trap shape
 // of the villain's element, saved as "<villain>.dump" under the "Trap Team" folder.
-bool CreateAndPlaceVillainTrap(int slot, const portal::TrapVillain& villain);
+bool CreateAndPlaceVillainTrap(int slot, const portal::TrapVillain& villain,
+                               std::string* error = nullptr);
 
 // The active software portal, for read-only status queries (HasFigure/Figure) from the overlay.
 // nullptr if portal_mode is not "software".
 portal::SoftwarePortal* GetSoftwarePortal();
 
-// The active USB portal, for read-only status queries (FigurePresent/DetectedIdVariant) from the
+// The active USB portal, for read-only status queries (PresentSlots/DetectedIdVariant) from the
 // overlay. nullptr if portal_mode is not "usb" or no device was found.
 portal::UsbPortal* GetUsbPortal();
 
@@ -88,7 +92,12 @@ bool DumpRealFigureToFile(int slot, std::filesystem::path* saved_path = nullptr,
 // software mode; a real USB portal keeps getting the encoded stream either way.
 void SubmitSpeakerPcm(std::span<const int16_t> pcm);
 
-// Binds F6 to toggle the portal figure picker overlay. Call from ReXApp::OnCreateDialogs.
+// Why the last save of a figure file failed, or empty when it worked. Stays set until that same
+// file saves again, so the player sees that the figure's progress isn't being kept.
+std::string FigureSaveError();
+
+// Binds F6 to toggle the portal figure picker overlay, and shows a banner whenever
+// FigureSaveError() is set. Call from ReXApp::OnCreateDialogs.
 void RegisterPortalOverlay(rex::ui::ImGuiDrawer* drawer);
 
 }  // namespace skylanders

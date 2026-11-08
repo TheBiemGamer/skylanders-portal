@@ -12,4 +12,11 @@ inline std::string Utf8Path(const std::filesystem::path& p) {
   return std::string(reinterpret_cast<const char*>(u8.data()), u8.size());
 }
 
+// A path from UTF-8 text (settings, ImGui input). Unlike path(std::string), keeps characters
+// outside the ANSI code page.
+inline std::filesystem::path Utf8ToPath(const std::string& utf8) {
+  const std::u8string u8(reinterpret_cast<const char8_t*>(utf8.data()), utf8.size());
+  return std::filesystem::path(u8);
+}
+
 }  // namespace skylanders
