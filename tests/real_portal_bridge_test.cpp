@@ -7,6 +7,7 @@
 #include <initializer_list>
 #include <optional>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "portal/figure_file.h"
@@ -48,6 +49,103 @@ bool BlockIs(const FigureData& data, int block, uint8_t fill) {
   return std::all_of(data.begin() + block * kBlockSize, data.begin() + (block + 1) * kBlockSize,
                      [&](uint8_t b) { return b == fill; });
 }
+
+// A real portal that misses the first 'A' after it is plugged in: it then stays switched off.
+class MissesFirstActivate : public PortalDevice {
+ public:
+  explicit MissesFirstActivate(SoftwarePortal* portal) : portal_(portal) {}
+  void Write(const Report& report) override {
+    if (report[0] == 'A' && !missed_) {
+      missed_ = true;
+      return;
+    }
+    portal_->Write(report);
+  }
+  Report Read() override { return portal_->Read(); }
+
+ private:
+  SoftwarePortal* portal_;
+  bool missed_ = false;
+};
+
+// A real portal that sends no status while it answers a block read, and answers each one late:
+// a whole figure takes well over a second, like on a real portal.
+class SlowReader : public PortalDevice {
+ public:
+  explicit SlowReader(SoftwarePortal* portal) : portal_(portal) {}
+  void Write(const Report& report) override {
+    if (report[0] == 'R') ++resets;
+    if (report[0] == 'Q') asked_ = last_read_ = std::chrono::steady_clock::now();
+    portal_->Write(report);
+  }
+  Report Read() override {
+    const auto now = std::chrono::steady_clock::now();
+    if (asked_) {
+      if (now - *asked_ < std::chrono::milliseconds(25)) return Report{};
+      asked_.reset();
+      Report r;
+      do r = portal_->Read(); while (r[0] == 0x53);  // the block reply, not the status before it
+      return r;
+    }
+    if (last_read_ && now - *last_read_ < std::chrono::milliseconds(100)) return Report{};
+    return portal_->Read();
+  }
+  int resets = 0;
+
+ private:
+  SoftwarePortal* portal_;
+  std::optional<std::chrono::steady_clock::time_point> asked_;
+  std::optional<std::chrono::steady_clock::time_point> last_read_;
+};
+
+// A portal still on from an earlier run: its first frame is an old status saying a figure is there,
+// sent before it has taken the bridge's 'R' and 'A', and nothing more arrives in that step.
+class StillOnFromBefore : public PortalDevice {
+ public:
+  explicit StillOnFromBefore(SoftwarePortal* portal) : portal_(portal) {}
+  void Write(const Report& report) override {
+    if (report[0] == 'Q' && !answered_activate_) ++reads_before_activate;
+    portal_->Write(report);
+  }
+  Report Read() override {
+    if (reads_++ == 0) return Cmd({0x53, 0x01, 0, 0, 0, 0x40, 0x01});
+    if (reads_ == 2) return Report{};
+    const Report r = portal_->Read();
+    if (r[0] == 0x41) answered_activate_ = true;
+    return r;
+  }
+  int reads_before_activate = 0;
+
+ private:
+  SoftwarePortal* portal_;
+  int reads_ = 0;
+  bool answered_activate_ = false;
+};
+
+// A real portal that drops a light sent before it has answered 'A', and keeps the last one shown.
+class LightPortal : public PortalDevice {
+ public:
+  explicit LightPortal(SoftwarePortal* portal) : portal_(portal) {}
+  void Write(const Report& report) override {
+    if (report[0] == 'R') shown.reset();
+    if (report[0] == 'C') {
+      if (answered_activate_) shown = report;
+      return;
+    }
+    if (report[0] == 'R' || report[0] == 'A') answered_activate_ = false;
+    portal_->Write(report);
+  }
+  Report Read() override {
+    const Report r = portal_->Read();
+    if (r[0] == 0x41) answered_activate_ = true;
+    return r;
+  }
+  std::optional<Report> shown;
+
+ private:
+  SoftwarePortal* portal_;
+  bool answered_activate_ = false;
+};
 
 }  // namespace
 
@@ -195,6 +293,67 @@ int main() {
     Run(bridge, &real);
     CHECK(emulated.HasFigure(kMaxFigures - 1));
     CHECK(bridge.RealUids().size() == 1);
+  }
+
+  // A portal that missed the first 'A' is activated again, and its figure still gets a copy.
+  {
+    SoftwarePortal real, emulated;
+    MissesFirstActivate device(&real);
+    RealPortalBridge bridge(&emulated, {dir / "again", nullptr, nullptr});
+    real.PlaceFigure(0, chop);
+    Run(bridge, &device);
+    CHECK(FirstFigure(emulated) == -1);
+    for (int i = 0; i < 300 && FirstFigure(emulated) == -1; ++i) {
+      Run(bridge, &device, 10);
+      std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    CHECK(FirstFigure(emulated) == kMaxFigures - 1);
+  }
+
+  // A portal busy reading a figure for over a second is not reset as if it were switched off.
+  {
+    SoftwarePortal real, emulated;
+    SlowReader device(&real);
+    RealPortalBridge bridge(&emulated, {dir / "slow", nullptr, nullptr});
+    real.PlaceFigure(0, chop);
+    for (int i = 0; i < 400 && FirstFigure(emulated) == -1; ++i) {
+      Run(bridge, &device, 10);
+      std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    CHECK(FirstFigure(emulated) == kMaxFigures - 1);
+    CHECK(device.resets == 1);
+  }
+
+  // An old status from before the bridge's 'A' starts no read (a real portal refuses it while it
+  // resets, three refusals and the bridge gives up): the figure is read once the portal answered.
+  {
+    SoftwarePortal real, emulated;
+    StillOnFromBefore device(&real);
+    RealPortalBridge bridge(&emulated, {dir / "still_on", nullptr, nullptr});
+    real.PlaceFigure(0, chop);
+    Run(bridge, &device);
+    CHECK(device.reads_before_activate == 0);
+    CHECK(FirstFigure(emulated) == kMaxFigures - 1);
+  }
+
+  // The game's light, set before the portal is there, shows once it has answered 'A', and again on
+  // a portal plugged back in (the game sets it only when it changes).
+  {
+    SoftwarePortal real, emulated;
+    LightPortal device(&real);
+    RealPortalBridge bridge(&emulated, {dir / "light", nullptr, nullptr});
+    const Report red = Cmd({'C', 0xFF, 0x00, 0x00});
+    bridge.OnLight(red);
+    Run(bridge, nullptr, 1);
+    Run(bridge, &device, 50);
+    CHECK(device.shown == red);
+    Run(bridge, nullptr, 1);
+    LightPortal again(&real);
+    for (int i = 0; i < 100 && !again.shown; ++i) {  // at most one light every 100 ms
+      Run(bridge, &again, 5);
+      std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    CHECK(again.shown == red);
   }
 
   std::filesystem::remove_all(dir);

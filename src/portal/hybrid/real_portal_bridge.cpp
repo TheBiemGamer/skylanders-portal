@@ -20,6 +20,11 @@ constexpr int kAttempts = 3;
 constexpr auto kLightInterval = std::chrono::milliseconds(100);
 // Reports handled per step: the real portal queues a status report every few milliseconds.
 constexpr int kReportsPerStep = 16;
+// A portal just plugged in can answer 'R' but miss the 'A' sent right after it; it then stays
+// switched off (status byte 6 is 00) and never reports a figure. With no sign of an active portal
+// for this long, ready and activate it again. A busy portal sends no status while it answers block
+// reads, so a block read or write it carried out counts as a sign too.
+constexpr auto kActivateAgain = std::chrono::seconds(1);
 
 Report Make(std::initializer_list<uint8_t> bytes) {
   Report r{};
@@ -49,6 +54,8 @@ uint32_t RealPortalBridge::UidOf(const FigureData& data) {
          (uint32_t(data[3]) << 24);
 }
 
+bool RealPortalBridge::Busy() const { return real_ && pending_.has_value(); }
+
 void RealPortalBridge::Log(const std::string& text) const {
   if (options_.log) options_.log(text);
 }
@@ -64,6 +71,9 @@ void RealPortalBridge::Step(PortalDevice* real) {
       // Ready, then activate: the portal then reports its figures, each as "added".
       real_->Write(Make({'R'}));
       real_->Write(Make({'A', 0x01}));
+      last_active_status_ = Clock::now();
+      activating_ = true;
+      ShowLightAgain();
       Log("Hybrid portal: real portal connected");
     }
   }
@@ -72,6 +82,14 @@ void RealPortalBridge::Step(PortalDevice* real) {
     const Report report = real_->Read();
     if (report[0] == 0) break;
     Handle(report);
+  }
+  if (Clock::now() - last_active_status_ > kActivateAgain) {
+    real_->Write(Make({'R'}));
+    real_->Write(Make({'A', 0x01}));
+    last_active_status_ = Clock::now();
+    activating_ = true;
+    ShowLightAgain();
+    Log("Hybrid portal: the real portal is not active; activating it again");
   }
   if (pending_ && Clock::now() - pending_->sent > kReplyTimeout) {
     const Command timed_out = *pending_;
@@ -107,6 +125,7 @@ void RealPortalBridge::Handle(const Report& report) {
       const int block = report[2];
       if (slot != pending_->slot || block != pending_->block) break;
       pending_.reset();
+      if (report[1] & 0x10) last_active_status_ = Clock::now();
       RealSlot& s = slots_[slot];
       if (s.phase != RealSlot::Phase::kReading) break;
       if (!(report[1] & 0x10)) {
@@ -123,6 +142,7 @@ void RealPortalBridge::Handle(const Report& report) {
       const int block = report[2];
       if (slot != pending_->slot || block != pending_->block) break;
       pending_.reset();
+      if (report[1] & 0x10) last_active_status_ = Clock::now();
       std::lock_guard lock(mu_);
       if (writes_.empty() || writes_.front().real_slot != slot || writes_.front().block != block) {
         break;
@@ -136,12 +156,19 @@ void RealPortalBridge::Handle(const Report& report) {
       }
       break;
     }
+    case 0x41:  // the activate reply: status from here on is fresh
+      activating_ = false;
+      break;
     default:
-      break;  // ready / activate replies and anything else
+      break;  // the ready reply and anything else
   }
 }
 
 void RealPortalBridge::HandleStatus(const Report& report) {
+  // Switched off, or sent before the portal took our 'A' (a portal still on from an earlier run
+  // can say a figure is there while it resets): says nothing about the figures.
+  if (report[6] == 0 || activating_) return;
+  last_active_status_ = Clock::now();
   const uint32_t states = uint32_t(report[1]) | (uint32_t(report[2]) << 8) |
                           (uint32_t(report[3]) << 16) | (uint32_t(report[4]) << 24);
   for (int slot = 0; slot < kMaxFigures; ++slot) {
@@ -182,8 +209,9 @@ void RealPortalBridge::SendNext() {
     real_->Write(Make({'Q', uint8_t(slot), uint8_t(s.next_block)}));
     return;
   }
+  // A portal still taking 'R' and 'A' drops the light, so it waits for the activate reply.
   std::optional<Report> light;
-  {
+  if (!activating_) {
     std::lock_guard lock(mu_);
     if (light_ && Clock::now() - last_light_ >= kLightInterval) {
       light = light_;
@@ -192,6 +220,7 @@ void RealPortalBridge::SendNext() {
   }
   if (light) {
     last_light_ = Clock::now();
+    shown_light_ = light;
     real_->Write(*light);  // no reply
   }
 }
@@ -339,6 +368,12 @@ void RealPortalBridge::OnEmulatedWrite(int emulated_slot, const FigureData& data
     written_[slot] = data;
     return;
   }
+}
+
+void RealPortalBridge::ShowLightAgain() {
+  // The game sets the light only when it changes; a new or reset portal starts dark.
+  std::lock_guard lock(mu_);
+  if (!light_) light_ = shown_light_;
 }
 
 void RealPortalBridge::OnLight(const Report& report) {

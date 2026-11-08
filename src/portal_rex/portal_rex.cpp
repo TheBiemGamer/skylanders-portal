@@ -416,7 +416,11 @@ void BridgeThread(skylanders::portal::RealPortalBridge* bridge, uint32_t generat
     } else {
       bridge->Step(x360);
     }
-    std::this_thread::sleep_for(std::chrono::milliseconds(4));
+    // While a command waits for its reply, Step again right away: a block then takes the portal's
+    // own ~11 ms, not that plus this sleep (~15 ms on Windows at the default timer resolution). The
+    // HID read waits up to 1 ms itself; the WinUSB and Xbox 360 reads don't, so with those this
+    // spins until the reply is in, only while a figure is read or written.
+    if (!bridge->Busy()) std::this_thread::sleep_for(std::chrono::milliseconds(4));
   }
   g_bridge_has_real.store(false);
   bridge->Step(nullptr);  // takes the copies off

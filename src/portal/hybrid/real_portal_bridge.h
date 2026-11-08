@@ -46,6 +46,10 @@ class RealPortalBridge {
   // `real` (connected, unplugged, replaced) takes every copy off and starts over.
   void Step(PortalDevice* real);
 
+  // A command to the real portal is waiting for its reply: call Step again right away, the
+  // device's read already waits for it. Only the Step thread may call this.
+  bool Busy() const;
+
   // From the emulated portal's write callback (any thread): queues the blocks of a copy that
   // changed, for writing to the real figure.
   void OnEmulatedWrite(int emulated_slot, const FigureData& data);
@@ -88,6 +92,7 @@ class RealPortalBridge {
   void Handle(const Report& report);
   void HandleStatus(const Report& report);
   void SendNext();
+  void ShowLightAgain();
   void Arrived(int real_slot);
   void Gone(int real_slot, const char* why);
   void TrackCopies();
@@ -101,6 +106,13 @@ class RealPortalBridge {
   std::array<RealSlot, kMaxFigures> slots_{};
   std::optional<Command> pending_;
   Clock::time_point last_light_{};
+  // The last sign that the real portal is active (a status frame saying so, or a block it read or
+  // wrote); see kActivateAgain.
+  Clock::time_point last_active_status_{};
+  // 'A' sent and not answered yet; status until then is ignored.
+  bool activating_ = false;
+  // The last light sent to the real portal, for a portal that is new or was reset.
+  std::optional<Report> shown_light_;
 
   // Shared with OnEmulatedWrite / OnLight / the queries (any thread).
   mutable std::mutex mu_;
