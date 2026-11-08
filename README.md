@@ -23,6 +23,15 @@ cmake -S . -B out -G Ninja -DREXSDK_DIR=<path to rexglue-sdk>
 cmake --build out && ctest --test-dir out
 ```
 
+## Figure backups
+
+Before the game first saves over a figure file in a run, and again every 30 minutes, a copy goes
+to `Backups\Figures\<path under the figures folder>\<date> <time>.dump` next to the figures folder
+(the newest 10 per figure). To put one back, open the figure picker (F6), choose the figure's slot,
+then open "Backups of <file>": they are listed newest first, and Restore puts the chosen one back
+on the portal and in the file. The file as it was is backed up first, so a restore can be undone
+the same way.
+
 ## Credits
 
 - [Cemu](https://github.com/cemu-project/Cemu), [RPCS3](https://github.com/RPCS3/rpcs3) and

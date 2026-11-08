@@ -234,6 +234,42 @@ void PortalOverlayDialog::OnDraw(ImGuiIO& io) {
   }
   ImGui::EndDisabled();
 
+  // Backups of the selected slot's file (portal_rex.cpp makes one before the game first saves to
+  // it). Restore swaps the backup onto the portal first, like a real portal swap: the slot takes no
+  // writes until the game has seen it, so the game can't save the old data over the restored file.
+  // The file as it was becomes the newest backup, so a restore can be undone.
+  if (const auto source = software->Source(selected_slot_)) {
+    const std::string name = Utf8Path(source->filename());
+    const std::filesystem::path backup_dir =
+        portal::FigureBackupDir(*source, Utf8ToPath(REXCVAR_GET(portal_figures_dir)));
+    if (ImGui::TreeNode("backups", "Backups of %s", name.c_str())) {
+      const std::vector<std::filesystem::path> backups = portal::ListFigureBackups(backup_dir);
+      if (backups.empty()) ImGui::TextDisabled("None yet: one is made before the game first saves.");
+      for (const auto& backup : backups) {
+        ImGui::PushID(Utf8Path(backup).c_str());
+        ImGui::TextUnformatted(Utf8Path(backup.stem()).c_str());
+        ImGui::SameLine(ImGui::GetWindowWidth() - 80);
+        if (ImGui::Button("Restore")) {
+          const auto data = portal::LoadFigureFile(backup);
+          if (!data) {
+            SetStatus("That backup of " + name + " is not a figure file.", true);
+          } else if (!software->PlaceFigure(selected_slot_, *data, *source)) {
+            SetStatus("Could not put that backup of " + name + " on the portal.", true);
+          } else if (!portal::RestoreFigureBackup(backup, *source, backup_dir)) {
+            PlaceFigureFromFile(selected_slot_, *source);  // back to the file, which is unchanged
+            SetStatus("Could not restore " + name + ". It is unchanged.", true);
+          } else {
+            SetStatus("Restored " + name + " from " + Utf8Path(backup.stem()) +
+                          ". What it held is now its newest backup.",
+                      false);
+          }
+        }
+        ImGui::PopID();
+      }
+      ImGui::TreePop();
+    }
+  }
+
   ImGui::Separator();
 
   if (creating_) {
