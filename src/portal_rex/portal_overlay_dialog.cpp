@@ -445,16 +445,17 @@ void PortalOverlayDialog::OnDraw(ImGuiIO& io) {
     if (!section_open) continue;
     ImGui::PushID(Utf8Path(entry.path).c_str());  // path::string() throws on non-ANSI names
     ImGui::TextUnformatted(entry.display_name.c_str());
-    if (entry_stats_[i]) {
-      ImGui::SameLine();
-      if (entry_stats_[i]->nickname.empty()) {
-        ImGui::TextDisabled("(Lv %u, %u gold)", static_cast<unsigned>(entry_stats_[i]->level),
-                            static_cast<unsigned>(entry_stats_[i]->gold));
-      } else {
-        ImGui::TextDisabled("(Lv %u, %u gold, \"%s\")", static_cast<unsigned>(entry_stats_[i]->level),
-                            static_cast<unsigned>(entry_stats_[i]->gold),
-                            entry_stats_[i]->nickname.c_str());
+    if (const auto& stats = entry_stats_[i]) {
+      std::string text = "(Lv " + std::to_string(stats->level) + ", " +
+                         std::to_string(stats->gold) + " gold";
+      if (stats->next_xp > stats->xp) {
+        text += ", " + std::to_string(stats->next_xp - stats->xp) + " XP to Lv " +
+                std::to_string(stats->level + 1);
       }
+      if (!stats->nickname.empty()) text += ", \"" + stats->nickname + "\"";
+      text += ")";
+      ImGui::SameLine();
+      ImGui::TextDisabled("%s", text.c_str());
     }
     ImGui::SameLine(ImGui::GetWindowWidth() - 80);
     if (const int holder = slot_holding(entry.path); holder != -1) {
