@@ -23,6 +23,19 @@ cmake -S . -B out -G Ninja -DREXSDK_DIR=<path to rexglue-sdk>
 cmake --build out && ctest --test-dir out
 ```
 
+## Portal modes
+
+The `portal_mode` setting picks the portal the game sees:
+
+- **`hybrid`** (the default): the virtual portal with the F6 figure picker, and a real Portal of
+  Power over USB as soon as one is plugged in. Each figure on the real portal is read and put on
+  the virtual portal as a copy. The game's saves to that copy are written back to the toy, and
+  kept in `real\<name> <UID>.dump` under the figures folder. Without a real portal this works like
+  `software`.
+- **`software`**: the virtual portal only.
+- **`usb`**: a real portal only (no driver changes needed).
+- **`none`**: no portal.
+
 ## Figure backups
 
 Before the game first saves over a figure file in a run, and again every 30 minutes, a copy goes

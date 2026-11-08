@@ -63,14 +63,16 @@ bool CreateAndPlaceVillainTrap(int slot, const portal::TrapVillain& villain,
                                std::string* error = nullptr);
 
 // The active software portal, for read-only status queries (HasFigure/Figure) from the overlay.
-// nullptr if portal_mode is not "software".
+// nullptr if portal_mode is not "software" or "hybrid".
 portal::SoftwarePortal* GetSoftwarePortal();
 
 // The active USB portal, for read-only status queries (PresentSlots/DetectedIdVariant) from the
-// overlay. nullptr if portal_mode is not "usb" or no device was found.
+// overlay. nullptr if portal_mode is not "usb" or no device was found; in "hybrid" it is the
+// device the bridge drives.
 portal::UsbPortal* GetUsbPortal();
 
-// Whether a real portal of any kind (HID, or the Xbox 360 one on WinUSB) is in use right now.
+// Whether a real portal of any kind (HID, or the Xbox 360 one on WinUSB) is in use right now,
+// in usb mode or by the hybrid bridge.
 bool RealPortalConnected();
 
 // Best-effort figure data for a real figure in `slot`, assembled passively from whatever the

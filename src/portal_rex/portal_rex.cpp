@@ -11,6 +11,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <thread>
 
 #include <rex/cvar.h>
 #include <rex/kernel/xam/noncontroller.h>
@@ -18,6 +19,7 @@
 #include <rex/logging.h>
 
 #include "portal/figure_file.h"
+#include "portal/hybrid/real_portal_bridge.h"
 #include "portal/portal_device.h"
 #include "portal/portal_mode.h"
 #include "portal/traffic_log.h"
@@ -31,10 +33,11 @@
 #include "portal_rex/portal_overlay_dialog.h"
 #include "portal_rex/sdl_audio_sink.h"
 
-REXCVAR_DEFINE_STRING(portal_mode, "software", "Portal",
-                      "Portal backend: 'software', 'usb' (a real, physical Portal of Power over "
-                      "USB -- no driver changes needed), or 'none'")
-    .allowed({"software", "usb", "none"});
+REXCVAR_DEFINE_STRING(portal_mode, "hybrid", "Portal",
+                      "Portal backend: 'hybrid' (the default: the portal menu, and a real Portal of "
+                      "Power over USB as soon as one is plugged in), 'software' (the menu only), "
+                      "'usb' (a real portal only -- no driver changes needed), or 'none'")
+    .allowed({"software", "usb", "hybrid", "none"});
 REXCVAR_DEFINE_STRING(portal_audio, "auto", "Portal",
                       "Portal speaker audio: 'auto' (the real portal's speaker in usb mode, PC "
                       "speakers in software mode) or 'off'")
@@ -59,6 +62,8 @@ std::atomic<skylanders::portal::UsbPortal*> g_usb_portal{nullptr};
 // A real Xbox 360 portal on WinUSB (portal/usb/xbox360_portal.h), set by the USB mode when no HID
 // portal opens: the game's frames then go to it unchanged, bypassing g_portal and the bridge.
 std::atomic<skylanders::portal::Xbox360Portal*> g_xbox360{nullptr};
+// The hybrid bridge has a real portal of either kind (RealPortalConnected).
+std::atomic<bool> g_bridge_has_real{false};
 
 // Set once a game hook has sent clean speaker PCM (SubmitSpeakerPcm).
 std::atomic<bool> g_speaker_pcm_tap{false};
@@ -315,6 +320,108 @@ class UsbHotPlugPortal final : public skylanders::portal::PortalDevice {
   uint8_t offline_counter_ = 0;               // status counter while unplugged
 };
 
+// portal_mode "hybrid" (portal/hybrid/real_portal_bridge.h). The bridge, its thread and the USB
+// portal it drives live for the whole process like the portals; switching away stops the thread.
+std::atomic<skylanders::portal::RealPortalBridge*> g_bridge{nullptr};
+std::atomic<uint32_t> g_bridge_generation{0};
+
+// What the game talks to in hybrid mode: the software portal (with the same announce dance as
+// TransitioningPortal), its light commands also going to the real portal.
+class HybridPortal final : public skylanders::portal::PortalDevice {
+ public:
+  HybridPortal(skylanders::portal::SoftwarePortal* software,
+               skylanders::portal::RealPortalBridge* bridge)
+      : software_(software), bridge_(bridge) {}
+
+  void Write(const skylanders::portal::Report& report) override {
+    software_->Write(report);
+    if (report[0] == 'C') bridge_->OnLight(report);
+  }
+  void WriteAudio(std::span<const int16_t> pcm) override { software_->WriteAudio(pcm); }
+  skylanders::portal::Report Read() override {
+    skylanders::portal::Report report = software_->Read();
+    ApplyAnnounceStep(report, phase_, added_reports_);
+    return report;
+  }
+
+ private:
+  skylanders::portal::SoftwarePortal* software_;
+  skylanders::portal::RealPortalBridge* bridge_;
+  AnnouncePhase phase_ = AnnouncePhase::kForceEmpty;
+  int added_reports_ = 0;
+};
+
+// Drives the bridge every few milliseconds and keeps looking for the USB portal (once a second)
+// while none is connected; ends when another portal mode takes over.
+// A real Xbox 360 portal (WinUSB) for the hybrid bridge, which speaks reports: the portal's frames
+// are a two-byte header and the report (xbox_frame.h). "Both" only ever looked for the HID portals
+// (TrapTeamRecomp #22). Its own thread queues the answers, so Read never waits.
+class Xbox360BridgeDevice final : public skylanders::portal::PortalDevice {
+ public:
+  explicit Xbox360BridgeDevice(skylanders::portal::Xbox360Portal* x360) : x360_(x360) {}
+
+  void Write(const skylanders::portal::Report& report) override {
+    std::array<uint8_t, skylanders::portal::kFrameSize> frame{};
+    skylanders::portal::FrameFromReport(report, frame.data());
+    x360_->Write(frame);
+  }
+
+  skylanders::portal::Report Read() override {
+    std::array<uint8_t, skylanders::portal::kFrameSize> frame{};
+    uint32_t bytes_read = 0;
+    if (x360_->Read(frame, bytes_read) && bytes_read >= skylanders::portal::kFrameSize) {
+      if (auto report = skylanders::portal::ReportFromFrame(frame.data())) return *report;
+    }
+    return {};
+  }
+
+  bool SeemsDisconnected() const { return x360_->SeemsDisconnected(); }
+
+ private:
+  skylanders::portal::Xbox360Portal* x360_;
+};
+
+void BridgeThread(skylanders::portal::RealPortalBridge* bridge, uint32_t generation) {
+  skylanders::portal::UsbPortal* usb = nullptr;
+  Xbox360BridgeDevice* x360 = nullptr;  // never freed, like every portal
+  auto last_attempt = std::chrono::steady_clock::now() - std::chrono::seconds(10);
+  while (g_bridge_generation.load() == generation) {
+    if (usb && usb->SeemsDisconnected()) {
+      REXLOG_WARN("Hybrid portal: the USB portal seems unplugged; looking for it again");
+      usb = nullptr;  // never freed, like every portal
+      g_usb_portal.store(nullptr);
+    }
+    if (x360 && x360->SeemsDisconnected()) {
+      REXLOG_WARN("Hybrid portal: the Xbox 360 portal seems unplugged; looking for it again");
+      x360 = nullptr;
+    }
+    if (!usb && !x360 && std::chrono::steady_clock::now() - last_attempt >= std::chrono::seconds(1)) {
+      last_attempt = std::chrono::steady_clock::now();
+      usb = SetUpUsbPortal();
+      g_usb_portal.store(usb);
+      if (!usb) {
+        // Not g_xbox360: that would send the game's frames to the portal past the bridge.
+        auto* portal = new skylanders::portal::Xbox360Portal();
+        if (portal->IsOpen()) {
+          x360 = new Xbox360BridgeDevice(portal);
+          REXLOG_INFO("Hybrid portal: Xbox 360 portal found (WinUSB)");
+        } else {
+          delete portal;  // never published, so nothing else could have seen it
+        }
+      }
+    }
+    g_bridge_has_real.store(usb != nullptr || x360 != nullptr);
+    if (usb) {
+      bridge->Step(usb);
+    } else {
+      bridge->Step(x360);
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(4));
+  }
+  g_bridge_has_real.store(false);
+  bridge->Step(nullptr);  // takes the copies off
+}
+
 // Keeps a copy of a figure file before the game first saves over it in this run, and again when the
 // last copy is 30 minutes old (the game writes several blocks a second while it plays, a copy each
 // time would be far too many): Backups\Figures next to the figures folder in use, the newest
@@ -350,6 +457,10 @@ skylanders::portal::SoftwarePortal* SetUpSoftwarePortal() {
   // matters. This callback just saves whatever source it is handed.
   software->SetWriteCallback([](int slot, const skylanders::portal::FigureData& data,
                                 const std::optional<std::filesystem::path>& source) {
+    // In hybrid mode a copy of a real figure also goes back onto the real one.
+    if (skylanders::portal::RealPortalBridge* bridge = g_bridge.load()) {
+      bridge->OnEmulatedWrite(slot, data);
+    }
     if (!source) return;  // this slot's figure did not come from a file
     BackUpBeforeFirstSave(*source);
     const bool saved = skylanders::portal::SaveFigureFileAtomic(*source, data);
@@ -405,6 +516,9 @@ void SwitchPortalMode(std::string_view mode_text) {
                 mode_text);
     return;
   }
+  // Whatever comes next, a running bridge stops (its thread sees the new generation).
+  g_bridge_generation.fetch_add(1);
+  g_bridge.store(nullptr);
   g_xbox360.store(nullptr);  // only the USB mode looks for one (UsbHotPlugPortal)
   if (*mode == skylanders::portal::PortalMode::kNone) {
     g_portal.store(nullptr);
@@ -432,6 +546,19 @@ void SwitchPortalMode(std::string_view mode_text) {
   skylanders::portal::SoftwarePortal* software = SetUpSoftwarePortal();
   g_usb_portal.store(nullptr);
   g_software_portal.store(software);
+  if (*mode == skylanders::portal::PortalMode::kHybrid) {
+    // Copies of the real figures are backed up next to the menu's figure files.
+    const std::string dir_utf8 = REXCVAR_GET(portal_figures_dir);
+    skylanders::portal::RealPortalBridge::Options options;
+    if (!dir_utf8.empty()) options.backup_dir = skylanders::Utf8ToPath(dir_utf8) / "real";
+    options.log = [](const std::string& text) { REXLOG_INFO("{}", text); };
+    auto* bridge = new skylanders::portal::RealPortalBridge(software, std::move(options));
+    g_bridge.store(bridge);
+    g_portal.store(new HybridPortal(software, bridge));  // never freed, see this function's comment
+    std::thread(BridgeThread, bridge, g_bridge_generation.load()).detach();
+    REXLOG_INFO("Portal: hybrid (portal menu and real portal)");
+    return;
+  }
   g_portal.store(new TransitioningPortal(software));  // never freed, see this function's comment
   REXLOG_INFO("Portal: software");
 }
@@ -557,7 +684,7 @@ portal::SoftwarePortal* GetSoftwarePortal() { return g_software_portal.load(); }
 portal::UsbPortal* GetUsbPortal() { return g_usb_portal.load(); }
 
 bool RealPortalConnected() {
-  return g_usb_portal.load() != nullptr || g_xbox360.load() != nullptr;
+  return g_usb_portal.load() != nullptr || g_xbox360.load() != nullptr || g_bridge_has_real.load();
 }
 
 std::optional<portal::FigureData> ReadRealFigureBlocks(int slot) {

@@ -129,7 +129,20 @@ void PortalOverlayDialog::OnDraw(ImGuiIO& io) {
     DrawStatus();
   }
 
-  if (portal::UsbPortal* usb = GetUsbPortal()) {
+  // Hybrid: the bridge drives the real portal (GetUsbPortal() is its device), so the real portal's
+  // figure list and dump are left out (a dump would take the slot away from the bridge); its
+  // figures show up in the virtual portal below as copies.
+  const bool hybrid =
+      portal::ParsePortalMode(REXCVAR_GET(portal_mode)) == portal::PortalMode::kHybrid;
+  if (hybrid) {
+    ImGui::TextWrapped("%s", RealPortalConnected()
+                                 ? "Real portal connected. Figures on it appear below as copies; "
+                                   "the game's changes to them are written back to the toys."
+                                 : "No real portal found. The virtual portal works as usual; plug "
+                                   "one in at any time.");
+    ImGui::Separator();
+  }
+  if (portal::UsbPortal* usb = hybrid ? nullptr : GetUsbPortal()) {
     ImGui::TextWrapped("Real USB portal connected.");
     if (usb->HadError()) {
       ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.2f, 1.0f),
