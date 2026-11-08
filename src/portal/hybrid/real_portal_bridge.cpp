@@ -210,18 +210,15 @@ void RealPortalBridge::SendNext() {
     return;
   }
   // A portal still taking 'R' and 'A' drops the light, so it waits for the activate reply.
-  std::optional<Report> light;
-  if (!activating_) {
+  std::map<uint16_t, Report> lights;
+  if (!activating_ && Clock::now() - last_light_ >= kLightInterval) {
     std::lock_guard lock(mu_);
-    if (light_ && Clock::now() - last_light_ >= kLightInterval) {
-      light = light_;
-      light_.reset();
-    }
+    lights.swap(lights_);
   }
-  if (light) {
-    last_light_ = Clock::now();
-    shown_light_ = light;
-    real_->Write(*light);  // no reply
+  if (!lights.empty()) last_light_ = Clock::now();
+  for (const auto& [key, light] : lights) {
+    shown_lights_[key] = light;
+    real_->Write(light);  // 'J' gets a 4A reply, which Handle ignores
   }
 }
 
@@ -373,12 +370,13 @@ void RealPortalBridge::OnEmulatedWrite(int emulated_slot, const FigureData& data
 void RealPortalBridge::ShowLightAgain() {
   // The game sets the light only when it changes; a new or reset portal starts dark.
   std::lock_guard lock(mu_);
-  if (!light_) light_ = shown_light_;
+  for (const auto& [key, light] : shown_lights_) lights_.try_emplace(key, light);
 }
 
 void RealPortalBridge::OnLight(const Report& report) {
   std::lock_guard lock(mu_);
-  light_ = report;
+  const uint16_t key = report[0] == 'C' ? uint16_t('C' << 8) : uint16_t(report[0] << 8 | report[1]);
+  lights_[key] = report;
 }
 
 std::vector<uint32_t> RealPortalBridge::RealUids() const {

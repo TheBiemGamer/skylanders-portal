@@ -326,7 +326,7 @@ std::atomic<skylanders::portal::RealPortalBridge*> g_bridge{nullptr};
 std::atomic<uint32_t> g_bridge_generation{0};
 
 // What the game talks to in hybrid mode: the software portal (with the same announce dance as
-// TransitioningPortal), its light commands also going to the real portal.
+// TransitioningPortal), its light commands ('C', 'J', 'L') also going to the real portal.
 class HybridPortal final : public skylanders::portal::PortalDevice {
  public:
   HybridPortal(skylanders::portal::SoftwarePortal* software,
@@ -335,7 +335,7 @@ class HybridPortal final : public skylanders::portal::PortalDevice {
 
   void Write(const skylanders::portal::Report& report) override {
     software_->Write(report);
-    if (report[0] == 'C') bridge_->OnLight(report);
+    if (skylanders::portal::RealPortalBridge::IsLight(report)) bridge_->OnLight(report);
   }
   void WriteAudio(std::span<const int16_t> pcm) override { software_->WriteAudio(pcm); }
   skylanders::portal::Report Read() override {

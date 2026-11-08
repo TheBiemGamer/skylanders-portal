@@ -9,7 +9,7 @@
 //     (never block 0 or 1 or a sector trailer, which hold the tag's identity and keys);
 //   - lifting the figure off the real portal takes the copy off; a copy the portal menu lifted is
 //     followed by its source path, so it is written again once the menu puts it back;
-//   - the game's light command goes on to the real portal.
+//   - the game's light commands go on to the real portal.
 // No ReXGlue dependency: tested with a second SoftwarePortal standing in for the real one.
 
 #include <array>
@@ -18,6 +18,7 @@
 #include <deque>
 #include <filesystem>
 #include <functional>
+#include <map>
 #include <mutex>
 #include <optional>
 #include <string>
@@ -54,7 +55,11 @@ class RealPortalBridge {
   // changed, for writing to the real figure.
   void OnEmulatedWrite(int emulated_slot, const FigureData& data);
 
-  // The game's light command ('C') for the portal; the newest one goes to the real portal.
+  // The game's light commands for the portal ('C' colour, 'J' a side's colour with a fade, 'L' the
+  // trap light; byte 1 says which light for 'J' and 'L'): the newest of each goes to the real portal.
+  static bool IsLight(const Report& report) {
+    return report[0] == 'C' || report[0] == 'J' || report[0] == 'L';
+  }
   void OnLight(const Report& report);
 
   // UIDs (the first four bytes of block 0) of the figures read from the real portal now.
@@ -111,8 +116,8 @@ class RealPortalBridge {
   Clock::time_point last_active_status_{};
   // 'A' sent and not answered yet; status until then is ignored.
   bool activating_ = false;
-  // The last light sent to the real portal, for a portal that is new or was reset.
-  std::optional<Report> shown_light_;
+  // The last of each light sent to the real portal, for a portal that is new or was reset.
+  std::map<uint16_t, Report> shown_lights_;
 
   // Shared with OnEmulatedWrite / OnLight / the queries (any thread).
   mutable std::mutex mu_;
@@ -121,7 +126,7 @@ class RealPortalBridge {
   std::array<uint32_t, kMaxFigures> uid_{};
   std::array<bool, kMaxFigures> mirrored_{};
   std::deque<PendingWrite> writes_;
-  std::optional<Report> light_;
+  std::map<uint16_t, Report> lights_;  // waiting to go out, by command and light
 };
 
 }  // namespace skylanders::portal

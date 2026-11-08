@@ -132,6 +132,7 @@ class LightPortal : public PortalDevice {
       if (answered_activate_) shown = report;
       return;
     }
+    if (report[0] == 'J') sent.push_back(report);
     if (report[0] == 'R' || report[0] == 'A') answered_activate_ = false;
     portal_->Write(report);
   }
@@ -141,6 +142,7 @@ class LightPortal : public PortalDevice {
     return r;
   }
   std::optional<Report> shown;
+  std::vector<Report> sent;  // 'J'
 
  private:
   SoftwarePortal* portal_;
@@ -354,6 +356,21 @@ int main() {
       std::this_thread::sleep_for(std::chrono::milliseconds(5));
     }
     CHECK(again.shown == red);
+    // 'J' (a side's colour) goes on too, the newest per side.
+    const Report left = Cmd({'J', 0x00, 0x00, 0xFF, 0x00});
+    const Report right_old = Cmd({'J', 0x02, 0x10, 0x10, 0x10});
+    const Report right = Cmd({'J', 0x02, 0x00, 0x00, 0xFF});
+    bridge.OnLight(left);
+    bridge.OnLight(right_old);
+    bridge.OnLight(right);
+    again.sent.clear();
+    for (int i = 0; i < 100 && again.sent.size() < 2; ++i) {
+      Run(bridge, &again, 5);
+      std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    CHECK(again.sent.size() == 2);
+    CHECK(std::find(again.sent.begin(), again.sent.end(), left) != again.sent.end());
+    CHECK(std::find(again.sent.begin(), again.sent.end(), right) != again.sent.end());
   }
 
   std::filesystem::remove_all(dir);
