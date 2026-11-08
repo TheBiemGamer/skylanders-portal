@@ -2,6 +2,7 @@
 
 #include <array>
 #include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <deque>
 #include <filesystem>
@@ -41,6 +42,16 @@ class SoftwarePortal : public PortalDevice {
   // Until then writes to the slot are refused: they were meant for the old figure.
   bool PlaceFigure(int slot, const FigureData& data,
                    std::optional<std::filesystem::path> source = std::nullopt);
+  // A figure still arriving (a real figure being read, see RealPortalBridge): only its first
+  // `ready_blocks` blocks are in `data`. The game's read of a later block gets its answer once
+  // FillFigure has the block, like a real portal still reading, and no status comes meanwhile, as a
+  // busy real portal sends none (after kHeldReadTimeout the read is refused). Writes to blocks not
+  // there yet are refused. Only into an empty slot: false if it holds a figure, or as PlaceFigure.
+  bool PlaceArrivingFigure(int slot, const FigureData& data, int ready_blocks,
+                           std::optional<std::filesystem::path> source = std::nullopt);
+  // More of an arriving figure: its blocks below `ready_blocks`, from `data`. False if the slot is
+  // empty.
+  bool FillFigure(int slot, const FigureData& data, int ready_blocks);
   bool RemoveFigure(int slot);  // false if out of range or empty; also forgets the source
   bool HasFigure(int slot) const;
   std::optional<FigureData> Figure(int slot) const;
@@ -76,6 +87,7 @@ class SoftwarePortal : public PortalDevice {
     bool present = false;
     SlotState state = SlotState::kEmpty;
     int reports_left = 0;  // status reports still to show kAdded
+    int ready_blocks = kBlockCount;  // fewer while the figure is arriving
     FigureData data{};
     std::optional<std::filesystem::path> source;
     // A swap in progress: the figure that replaces `data` once the game has seen it removed.
@@ -93,6 +105,13 @@ class SoftwarePortal : public PortalDevice {
   std::atomic<PortalAudioSink*> audio_sink_{nullptr};
   mutable std::mutex mu_;
   std::deque<Report> replies_;
+  // The game's read of a block still arriving; answered by Read once the block is there.
+  struct HeldRead {
+    int slot;
+    int block;
+    std::chrono::steady_clock::time_point since;
+  };
+  std::optional<HeldRead> held_;
   std::array<Slot, kMaxFigures> slots_{};
   bool active_ = false;
   uint8_t counter_ = 0;

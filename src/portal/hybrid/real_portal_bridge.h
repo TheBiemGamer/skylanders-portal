@@ -73,7 +73,8 @@ class RealPortalBridge {
   using Clock = std::chrono::steady_clock;
 
   struct RealSlot {
-    enum class Phase { kEmpty, kReading, kMirrored, kFailed } phase = Phase::kEmpty;
+    // kArriving: the copy is on the emulated portal while the rest is read (Placed, Arrived).
+    enum class Phase { kEmpty, kReading, kArriving, kMirrored, kFailed } phase = Phase::kEmpty;
     FigureData data{};
     int next_block = 0;
     int attempts = 0;
@@ -98,7 +99,12 @@ class RealPortalBridge {
   void HandleStatus(const Report& report);
   void SendNext();
   void ShowLightAgain();
+  static bool Reading(const RealSlot& s) {
+    return s.phase == RealSlot::Phase::kReading || s.phase == RealSlot::Phase::kArriving;
+  }
+  void Placed(int real_slot);
   void Arrived(int real_slot);
+  void Fail(int real_slot);
   void Gone(int real_slot, const char* why);
   void TrackCopies();
   int FindCopy(const std::filesystem::path& source) const;

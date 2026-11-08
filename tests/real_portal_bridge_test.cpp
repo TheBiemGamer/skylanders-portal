@@ -298,7 +298,7 @@ int main() {
   }
 
   // A portal that missed the first 'A' is activated again, and its figure still gets a copy.
-  {
+  [&] {  // own stack frame: the portals are large
     SoftwarePortal real, emulated;
     MissesFirstActivate device(&real);
     RealPortalBridge bridge(&emulated, {dir / "again", nullptr, nullptr});
@@ -310,10 +310,10 @@ int main() {
       std::this_thread::sleep_for(std::chrono::milliseconds(10));
     }
     CHECK(FirstFigure(emulated) == kMaxFigures - 1);
-  }
+  }();
 
   // A portal busy reading a figure for over a second is not reset as if it were switched off.
-  {
+  [&] {  // own stack frame: the portals are large
     SoftwarePortal real, emulated;
     SlowReader device(&real);
     RealPortalBridge bridge(&emulated, {dir / "slow", nullptr, nullptr});
@@ -324,11 +324,66 @@ int main() {
     }
     CHECK(FirstFigure(emulated) == kMaxFigures - 1);
     CHECK(device.resets == 1);
-  }
+  }();
+
+  // The copy is on the emulated portal once the toy's identity is read, and the game reads it
+  // while the rest arrives: a block not read yet is answered once it is in.
+  [&] {  // own stack frame: the portals are large
+    SoftwarePortal real, emulated;
+    SlowReader device(&real);
+    std::vector<int> arrived;
+    RealPortalBridge bridge(&emulated, {dir / "early", nullptr, [&](int slot) { arrived.push_back(slot); }});
+    real.PlaceFigure(0, chop);
+    for (int i = 0; i < 100 && FirstFigure(emulated) == -1; ++i) {
+      Run(bridge, &device, 1);
+      std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    const int copy = FirstFigure(emulated);
+    CHECK(copy == kMaxFigures - 1);
+    CHECK(arrived.empty());  // still arriving
+    emulated.Write(Cmd({'A', 0x01}));
+    while (emulated.Read()[0] != 0x41) {
+    }
+    emulated.Write(Cmd({'Q', uint8_t(copy), 0}));
+    Report r = emulated.Read();
+    CHECK(r[0] == 0x51 && (r[1] & 0x10) && std::equal(r.begin() + 3, r.begin() + 3 + kBlockSize, chop.begin()));
+    emulated.Write(Cmd({'Q', uint8_t(copy), 63}));
+    CHECK(emulated.Read()[0] == 0);  // held until the toy's last block is in
+    r = Report{};
+    for (int i = 0; i < 400 && r[0] == 0; ++i) {
+      Run(bridge, &device, 5);
+      std::this_thread::sleep_for(std::chrono::milliseconds(5));
+      r = emulated.Read();
+    }
+    CHECK(r[0] == 0x51 && (r[1] & 0x10) && r[2] == 63);
+    CHECK(std::equal(r.begin() + 3, r.begin() + 3 + kBlockSize, chop.begin() + 63 * kBlockSize));
+    CHECK(arrived.size() == 1 && arrived[0] == copy);
+    CHECK(emulated.Figure(copy) == chop);
+  }();
+
+  // Lifted off while it is still being read: the copy leaves the emulated portal.
+  [&] {  // own stack frame: the portals are large
+    SoftwarePortal real, emulated;
+    SlowReader device(&real);
+    RealPortalBridge bridge(&emulated, {dir / "lifted", nullptr, nullptr});
+    real.PlaceFigure(0, chop);
+    for (int i = 0; i < 100 && FirstFigure(emulated) == -1; ++i) {
+      Run(bridge, &device, 1);
+      std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    CHECK(FirstFigure(emulated) == kMaxFigures - 1);
+    real.RemoveFigure(0);
+    for (int i = 0; i < 100 && FirstFigure(emulated) != -1; ++i) {
+      Run(bridge, &device, 5);
+      std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    CHECK(FirstFigure(emulated) == -1);
+    CHECK(bridge.RealUids().empty());
+  }();
 
   // An old status from before the bridge's 'A' starts no read (a real portal refuses it while it
   // resets, three refusals and the bridge gives up): the figure is read once the portal answered.
-  {
+  [&] {  // own stack frame: the portals are large
     SoftwarePortal real, emulated;
     StillOnFromBefore device(&real);
     RealPortalBridge bridge(&emulated, {dir / "still_on", nullptr, nullptr});
@@ -336,11 +391,11 @@ int main() {
     Run(bridge, &device);
     CHECK(device.reads_before_activate == 0);
     CHECK(FirstFigure(emulated) == kMaxFigures - 1);
-  }
+  }();
 
   // The game's light, set before the portal is there, shows once it has answered 'A', and again on
   // a portal plugged back in (the game sets it only when it changes).
-  {
+  [&] {  // own stack frame: the portals are large
     SoftwarePortal real, emulated;
     LightPortal device(&real);
     RealPortalBridge bridge(&emulated, {dir / "light", nullptr, nullptr});
@@ -371,7 +426,7 @@ int main() {
     CHECK(again.sent.size() == 2);
     CHECK(std::find(again.sent.begin(), again.sent.end(), left) != again.sent.end());
     CHECK(std::find(again.sent.begin(), again.sent.end(), right) != again.sent.end());
-  }
+  }();
 
   std::filesystem::remove_all(dir);
   return Finish("real portal bridge");

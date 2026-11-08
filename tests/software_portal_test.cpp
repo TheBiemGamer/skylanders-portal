@@ -529,5 +529,40 @@ int main() {
     CHECK(sink.got.size() == 60);
   }
 
+  // A figure still arriving: blocks there are read at once, a read of a later one is held (no
+  // reply, no status) until FillFigure has it; writes to blocks not there yet are refused.
+  {
+    SoftwarePortal portal;
+    portal.Write(Cmd({'A', 0x01}));
+    portal.Read();
+    FigureData full{};
+    for (size_t i = 0; i < full.size(); ++i) full[i] = static_cast<uint8_t>(i / kBlockSize + 1);
+    CHECK(portal.PlaceArrivingFigure(2, full, 2));
+    CHECK(!portal.PlaceArrivingFigure(2, full, 2));  // the slot holds a figure
+    portal.Write(Cmd({'Q', 2, 1}));
+    Report r = portal.Read();
+    CHECK(r[0] == 0x51 && r[1] == 0x12 && r[2] == 1 && r[3] == 2);
+    portal.Write(Cmd({'Q', 2, 5}));
+    CHECK(portal.Read()[0] == 0);
+    CHECK(portal.Read()[0] == 0);
+    portal.Write(Cmd({'W', 2, 9}));  // a block not there yet
+    CHECK(portal.FillFigure(2, full, 6));
+    r = portal.Read();
+    CHECK(r[0] == 0x51 && r[1] == 0x12 && r[2] == 5 && r[3] == 6);
+    r = portal.Read();
+    CHECK(r[0] == 0x57 && r[1] == 0x02 && r[2] == 9);
+    // Taken off while a read is held: the read is refused.
+    portal.Write(Cmd({'Q', 2, 40}));
+    CHECK(portal.Read()[0] == 0);
+    CHECK(portal.RemoveFigure(2));
+    r = portal.Read();
+    CHECK(r[0] == 0x51 && r[1] == 0x02 && r[2] == 40);
+    // A whole figure placed into that slot again reads normally.
+    CHECK(portal.PlaceFigure(2, full));
+    portal.Write(Cmd({'Q', 2, 63}));
+    r = portal.Read();
+    CHECK(r[0] == 0x51 && r[1] == 0x12 && r[2] == 63 && r[3] == 64);
+  }
+
   return Finish("software_portal");
 }

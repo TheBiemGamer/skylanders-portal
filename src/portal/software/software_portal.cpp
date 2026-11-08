@@ -9,6 +9,8 @@ namespace {
 
 // A new figure shows as "added" for this many status reports before it settles to "ready".
 constexpr int kAddedReports = 8;
+// A held read (PlaceArrivingFigure) is refused after this: the real figure stopped arriving.
+constexpr auto kHeldReadTimeout = std::chrono::seconds(2);
 
 Report MakeReport(std::initializer_list<uint8_t> bytes) {
   Report r{};
@@ -70,6 +72,10 @@ void SoftwarePortal::Write(const Report& in) {
         const uint8_t block = in[2];
         Report out = MakeReport({0x51, slot, block});
         const Slot& s = slots_[slot];
+        if (s.present && !s.pending && block < kBlockCount && block >= s.ready_blocks) {
+          held_ = HeldRead{slot, block, std::chrono::steady_clock::now()};  // answered by Read
+          break;
+        }
         if (s.present && !s.pending && block < kBlockCount) {
           out[1] |= 0x10;
           std::copy_n(s.data.begin() + block * kBlockSize, kBlockSize, out.begin() + 3);
@@ -86,7 +92,7 @@ void SoftwarePortal::Write(const Report& in) {
         Report out = MakeReport({0x57, slot, block});
         Slot& s = slots_[slot];
         // Mid-swap the write was meant for the figure that is leaving: refuse it.
-        if (s.present && !s.pending && block < kBlockCount) {
+        if (s.present && !s.pending && block < s.ready_blocks) {
           out[1] |= 0x10;
           std::copy_n(in.begin() + 3, kBlockSize, s.data.begin() + block * kBlockSize);
           if (research_log_) {
@@ -111,6 +117,24 @@ void SoftwarePortal::Write(const Report& in) {
 
 Report SoftwarePortal::Read() {
   std::lock_guard<std::mutex> lock(mu_);
+  if (held_) {
+    const Slot& s = slots_[held_->slot];
+    const bool there = s.present && !s.pending;
+    if (there && held_->block >= s.ready_blocks &&
+        std::chrono::steady_clock::now() - held_->since < kHeldReadTimeout) {
+      return Report{};  // still reading: nothing to say, no status either
+    }
+    Report out = MakeReport({0x51, static_cast<uint8_t>(held_->slot), static_cast<uint8_t>(held_->block)});
+    if (there && held_->block < s.ready_blocks) {
+      out[1] |= 0x10;
+      std::copy_n(s.data.begin() + held_->block * kBlockSize, kBlockSize, out.begin() + 3);
+      if (research_log_) {
+        research_log_("read", held_->slot, held_->block, &s.data[held_->block * kBlockSize], kBlockSize);
+      }
+    }
+    held_.reset();
+    return out;
+  }
   if (!replies_.empty()) {
     Report r = replies_.front();
     replies_.pop_front();
@@ -206,12 +230,34 @@ bool SoftwarePortal::PlaceFigure(int slot, const FigureData& data,
   return true;
 }
 
+bool SoftwarePortal::PlaceArrivingFigure(int slot, const FigureData& data, int ready_blocks,
+                                         std::optional<std::filesystem::path> source) {
+  if (slot < 0 || slot >= kMaxFigures || HasFigure(slot)) return false;
+  if (!PlaceFigure(slot, data, std::move(source))) return false;
+  std::lock_guard<std::mutex> lock(mu_);
+  slots_[slot].ready_blocks = std::clamp(ready_blocks, 0, static_cast<int>(kBlockCount));
+  return true;
+}
+
+bool SoftwarePortal::FillFigure(int slot, const FigureData& data, int ready_blocks) {
+  if (slot < 0 || slot >= kMaxFigures) return false;
+  std::lock_guard<std::mutex> lock(mu_);
+  Slot& s = slots_[slot];
+  if (!s.present) return false;
+  const int ready = std::clamp(ready_blocks, s.ready_blocks, static_cast<int>(kBlockCount));
+  std::copy(data.begin() + s.ready_blocks * kBlockSize, data.begin() + ready * kBlockSize,
+            s.data.begin() + s.ready_blocks * kBlockSize);
+  s.ready_blocks = ready;
+  return true;
+}
+
 bool SoftwarePortal::RemoveFigure(int slot) {
   if (slot < 0 || slot >= kMaxFigures) return false;
   std::lock_guard<std::mutex> lock(mu_);
   Slot& s = slots_[slot];
   if (!s.present) return false;
   s.present = false;
+  s.ready_blocks = kBlockCount;
   s.data = FigureData{};
   s.source.reset();
   s.pending.reset();
