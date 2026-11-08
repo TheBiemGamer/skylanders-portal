@@ -32,12 +32,21 @@ class SoftwarePortal : public PortalDevice {
   // fired for this slot always sees the source that matches whichever figure is actually live at
   // that instant — even across a swap (PlaceFigure called again on an already-present slot) with
   // no separate, independently-lockable bookkeeping that could ever fall out of step with it.
+  //
+  // Returns false if `slot` is out of range, or if `source` is already the file of another slot:
+  // two copies of one figure would save over each other and lose one's progress.
+  //
+  // Swapping (placing onto an occupied slot) while the game has the portal active reports the old
+  // figure as removing for one status report before the new one is added, like a real portal.
+  // Until then writes to the slot are refused: they were meant for the old figure.
   bool PlaceFigure(int slot, const FigureData& data,
-                   std::optional<std::filesystem::path> source = std::nullopt);  // false if out of range
+                   std::optional<std::filesystem::path> source = std::nullopt);
   bool RemoveFigure(int slot);  // false if out of range or empty; also forgets the source
   bool HasFigure(int slot) const;
   std::optional<FigureData> Figure(int slot) const;
   std::optional<std::filesystem::path> Source(int slot) const;  // nullopt if empty, out of range, or no source
+  // The slot whose figure was placed from `file` (the same file, however spelled), or -1.
+  int SlotWithSource(const std::filesystem::path& file) const;
 
   // Called after a successful figure write ('W' to a present slot and a valid block), with the
   // slot index, the figure's full data at that point, and the source PlaceFigure was given for
@@ -55,7 +64,7 @@ class SoftwarePortal : public PortalDevice {
   // under the portal's lock (like the callback above, but note it fires *inside* Write(), not
   // after unlocking), so it must be cheap and must not call back into this SoftwarePortal.
   // SoftwarePortal deliberately has no ReXGlue dependency of its own (see CMakeLists.txt), so it
-  // cannot call REXLOG_TRACE directly -- whoever wires this up (see portal_hook.cpp, which does
+  // cannot call REXLOG_TRACE directly -- whoever wires this up (see portal_rex.cpp, which does
   // link ReXGlue) does the actual logging. Pass nullptr to remove it.
   void SetResearchLogCallback(
       std::function<void(const char* op, int slot, int block, const uint8_t* data, size_t n)>
@@ -69,9 +78,17 @@ class SoftwarePortal : public PortalDevice {
     int reports_left = 0;  // status reports still to show kAdded
     FigureData data{};
     std::optional<std::filesystem::path> source;
+    // A swap in progress: the figure that replaces `data` once the game has seen it removed.
+    struct Pending {
+      FigureData data;
+      std::optional<std::filesystem::path> source;
+    };
+    std::optional<Pending> pending;
   };
 
   Report StatusReportLocked();
+  int SlotWithSourceLocked(const std::filesystem::path& file) const;
+  void FinishSwapLocked(Slot& s);
 
   std::atomic<PortalAudioSink*> audio_sink_{nullptr};
   mutable std::mutex mu_;

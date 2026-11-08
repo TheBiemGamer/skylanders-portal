@@ -37,6 +37,7 @@ void SoftwarePortal::Write(const Report& in) {
         break;
       case 'A': {  // activate (argument != 0) or deactivate (argument == 0)
         const bool activate = in[1] != 0;
+        for (Slot& s : slots_) FinishSwapLocked(s);  // nothing to announce a swap against
         if (activate && !active_) {
           // Figures are announced when the portal goes from inactive to active. The game repeats
           // 'A 01' about every 10 seconds while it is already active; announcing again then made
@@ -69,7 +70,7 @@ void SoftwarePortal::Write(const Report& in) {
         const uint8_t block = in[2];
         Report out = MakeReport({0x51, slot, block});
         const Slot& s = slots_[slot];
-        if (s.present && block < kBlockCount) {
+        if (s.present && !s.pending && block < kBlockCount) {
           out[1] |= 0x10;
           std::copy_n(s.data.begin() + block * kBlockSize, kBlockSize, out.begin() + 3);
           if (research_log_) {
@@ -84,7 +85,8 @@ void SoftwarePortal::Write(const Report& in) {
         const uint8_t block = in[2];
         Report out = MakeReport({0x57, slot, block});
         Slot& s = slots_[slot];
-        if (s.present && block < kBlockCount) {
+        // Mid-swap the write was meant for the figure that is leaving: refuse it.
+        if (s.present && !s.pending && block < kBlockCount) {
           out[1] |= 0x10;
           std::copy_n(in.begin() + 3, kBlockSize, s.data.begin() + block * kBlockSize);
           if (research_log_) {
@@ -132,17 +134,66 @@ Report SoftwarePortal::StatusReportLocked() {
     if (s.state == SlotState::kAdded) {
       if (--s.reports_left <= 0) s.state = SlotState::kReady;
     } else if (s.state == SlotState::kRemoving) {
-      s.state = SlotState::kEmpty;
+      if (s.pending) {  // the game has seen the old figure leave; the new one arrives
+        FinishSwapLocked(s);
+        s.state = SlotState::kAdded;
+        s.reports_left = kAddedReports;
+      } else {
+        s.state = SlotState::kEmpty;
+      }
     }
   }
   return r;
+}
+
+namespace {
+
+bool SameFile(const std::filesystem::path& a, const std::filesystem::path& b) {
+  std::error_code ec;
+  const bool same = std::filesystem::equivalent(a, b, ec);
+  return ec ? a == b : same;
+}
+
+}  // namespace
+
+int SoftwarePortal::SlotWithSourceLocked(const std::filesystem::path& file) const {
+  for (int i = 0; i < kMaxFigures; ++i) {
+    const Slot& s = slots_[i];
+    if (!s.present) continue;
+    const auto& source = s.pending ? s.pending->source : s.source;
+    if (source && SameFile(*source, file)) return i;
+  }
+  return -1;
+}
+
+int SoftwarePortal::SlotWithSource(const std::filesystem::path& file) const {
+  std::lock_guard<std::mutex> lock(mu_);
+  return SlotWithSourceLocked(file);
+}
+
+void SoftwarePortal::FinishSwapLocked(Slot& s) {
+  if (!s.pending) return;
+  s.data = s.pending->data;
+  s.source = std::move(s.pending->source);
+  s.pending.reset();
 }
 
 bool SoftwarePortal::PlaceFigure(int slot, const FigureData& data,
                                  std::optional<std::filesystem::path> source) {
   if (slot < 0 || slot >= kMaxFigures) return false;
   std::lock_guard<std::mutex> lock(mu_);
+  if (source) {
+    const int holder = SlotWithSourceLocked(*source);
+    if (holder != -1 && holder != slot) return false;
+  }
   Slot& s = slots_[slot];
+  if (active_ && s.present) {
+    // Swap: the game sees the old figure leave first (see the header).
+    s.pending = Slot::Pending{data, std::move(source)};
+    s.state = SlotState::kRemoving;
+    return true;
+  }
+  s.pending.reset();
   s.present = true;
   s.data = data;
   s.source = std::move(source);
@@ -163,6 +214,7 @@ bool SoftwarePortal::RemoveFigure(int slot) {
   s.present = false;
   s.data = FigureData{};
   s.source.reset();
+  s.pending.reset();
   s.state = active_ ? SlotState::kRemoving : SlotState::kEmpty;
   return true;
 }

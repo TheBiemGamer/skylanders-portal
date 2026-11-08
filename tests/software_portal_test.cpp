@@ -1,6 +1,7 @@
 #include <atomic>
 #include <chrono>
 #include <filesystem>
+#include <fstream>
 #include <initializer_list>
 #include <optional>
 #include <thread>
@@ -409,6 +410,87 @@ int main() {
     p.PlaceFigure(3, pattern(), path_a);
     p.RemoveFigure(3);
     CHECK(!p.Source(3).has_value());  // removed: forgotten, not just the figure
+  }
+
+  // The same file can't be on the portal twice: both copies would save over each other.
+  {
+    namespace fs = std::filesystem;
+    const fs::path dir = fs::temp_directory_path() / L"sp_portal_same_file";
+    fs::remove_all(dir);
+    fs::create_directories(dir);
+    const fs::path a = dir / L"a.dump";
+    const fs::path b = dir / L"b.dump";
+    std::ofstream(a, std::ios::binary) << "x";
+    std::ofstream(b, std::ios::binary) << "x";
+
+    SoftwarePortal p;
+    CHECK(p.SlotWithSource(a) == -1);
+    CHECK(p.PlaceFigure(0, pattern(), a));
+    CHECK(p.SlotWithSource(a) == 0);
+    CHECK(p.SlotWithSource(dir / L"." / L"a.dump") == 0);  // same file, other spelling
+    CHECK(!p.PlaceFigure(1, pattern(), a));                // refused, slot 1 stays empty
+    CHECK(!p.HasFigure(1));
+    CHECK(!p.PlaceFigure(1, pattern(), dir / L"." / L"a.dump"));
+    CHECK(p.PlaceFigure(1, pattern(), b));  // another file is fine
+    CHECK(p.PlaceFigure(0, pattern(), a));  // putting it back on its own slot is fine
+    CHECK(p.PlaceFigure(2, pattern()));     // figures without a file never clash
+    CHECK(p.PlaceFigure(3, pattern()));
+    p.RemoveFigure(0);
+    CHECK(p.PlaceFigure(4, pattern(), a));  // free again once taken off
+    fs::remove_all(dir);
+  }
+
+  // Swapping figures while the game is running: the game first sees the slot as removing, then as
+  // added, like taking a toy off a real portal and putting another on. Writes in between were
+  // meant for the old figure and are refused, so they never reach the new figure or its file.
+  {
+    SoftwarePortal p;
+    std::vector<std::pair<std::optional<std::filesystem::path>, uint8_t>> saved;
+    p.SetWriteCallback([&](int, const FigureData& d,
+                           const std::optional<std::filesystem::path>& source) {
+      saved.emplace_back(source, d[1 * kBlockSize]);
+    });
+    p.Write(Cmd({'A', 0x01}));
+    p.Read();  // 'A' reply
+    FigureData old_fig{}, new_fig{};
+    old_fig[0] = 0xAA;
+    new_fig[0] = 0xBB;
+    p.PlaceFigure(0, old_fig, std::filesystem::path("old.dump"));
+    for (int i = 0; i < 10; ++i) p.Read();  // settle to ready
+
+    p.PlaceFigure(0, new_fig, std::filesystem::path("new.dump"));
+    Report w = Cmd({'W', 0x00, 0x01});
+    w[3] = 0x77;
+    p.Write(w);  // in flight for the old figure
+    Report w_reply = p.Read();
+    CHECK(w_reply[0] == 0x57 && (w_reply[1] & 0x10) == 0);  // refused
+    CHECK(saved.empty());
+
+    Report removing = p.Read();
+    CHECK(removing[0] == 0x53 && (removing[1] & 0x03) == 2);  // removing
+    Report added = p.Read();
+    CHECK(added[0] == 0x53 && (added[1] & 0x03) == 3);  // added
+    CHECK(p.Figure(0) && (*p.Figure(0))[0] == 0xBB);
+    CHECK(p.Source(0) == std::filesystem::path("new.dump"));
+
+    p.Write(w);  // now meant for the new figure
+    CHECK((p.Read()[1] & 0x10) != 0);
+    CHECK(saved.size() == 1 && saved[0].first == std::filesystem::path("new.dump") &&
+          saved[0].second == 0x77);
+  }
+
+  // Taking the figure off mid-swap cancels the swap: the slot ends up empty.
+  {
+    SoftwarePortal p;
+    p.Write(Cmd({'A', 0x01}));
+    p.Read();
+    p.PlaceFigure(0, pattern());
+    for (int i = 0; i < 10; ++i) p.Read();
+    p.PlaceFigure(0, pattern());
+    p.RemoveFigure(0);
+    CHECK((p.Read()[1] & 0x03) == 2);  // removing
+    CHECK((p.Read()[1] & 0x03) == 0);  // empty, the new figure never arrives
+    CHECK(!p.HasFigure(0));
   }
 
   // 'J' (Trap Team portal sync) is answered with a 4A report; 'L' (side lights) gets none.
