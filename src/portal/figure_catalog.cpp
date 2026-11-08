@@ -7,6 +7,8 @@
 
 #include "portal/figure_file.h"
 #include "portal/trap_villain.h"
+#include "portal/text.h"
+#include "portal/utf8_path.h"
 #include "portal/skylander_catalog_data.h"
 
 namespace skylanders::portal {
@@ -22,12 +24,6 @@ const SkylanderInfo* FindSkylander(uint16_t id, uint16_t variant) {
 
 namespace {
 
-std::string Lower(std::string s) {
-  std::transform(s.begin(), s.end(), s.begin(),
-                 [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-  return s;
-}
-
 std::string TopLevelFolder(const std::filesystem::path& root, const std::filesystem::path& file) {
   std::error_code ec;
   auto rel = std::filesystem::relative(file, root, ec);
@@ -38,7 +34,7 @@ std::string TopLevelFolder(const std::filesystem::path& root, const std::filesys
   auto next = first;
   ++next;
   if (next == rel.end()) return {};
-  return first->string();
+  return Utf8Path(*first);
 }
 
 // Strips a leading "N. " release-numbering prefix and normalizes "_s " to "'s ", so a folder
@@ -102,8 +98,8 @@ std::vector<FigureCatalogEntry> ScanFigureCatalog(const std::filesystem::path& r
   for (; !ec && it != end; it.increment(ec)) {
     if (!it->is_regular_file(ec) || ec) continue;
     const auto& path = it->path();
-    if (Lower(path.extension().string()) != ".dump") continue;
-    const std::string name = path.stem().string();
+    if (Lower(Utf8Path(path.extension())) != ".dump") continue;
+    const std::string name = Utf8Path(path.stem());
     entries.push_back({name, ResolveDisplayName(path, name), TopLevelFolder(root, path), path});
   }
 

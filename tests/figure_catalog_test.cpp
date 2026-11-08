@@ -206,5 +206,24 @@ int main() {
     fs::remove_all(dir);
   }
 
+  // Names outside the ANSI code page (a star, Japanese) scan without throwing, as UTF-8.
+  {
+    fs::path dir = fs::temp_directory_path() / L"sp_catalog_unicode";
+    fs::remove_all(dir);
+    Touch(dir / L"スカイ" / L"Spyro ★.dump");
+    std::vector<FigureCatalogEntry> entries;
+    try {
+      entries = ScanFigureCatalog(dir);
+    } catch (...) {
+      CHECK(!"ScanFigureCatalog threw on a non-ANSI name");
+    }
+    CHECK(entries.size() == 1);
+    if (!entries.empty()) {
+      CHECK(entries[0].name == "Spyro \xE2\x98\x85");
+      CHECK(entries[0].game == "\xE3\x82\xB9\xE3\x82\xAB\xE3\x82\xA4");
+    }
+    fs::remove_all(dir);
+  }
+
   return Finish("figure_catalog");
 }

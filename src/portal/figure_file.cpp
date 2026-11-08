@@ -1,5 +1,7 @@
 #include "portal/figure_file.h"
 
+#include "portal/figure_crypto.h"
+
 #include <fstream>
 #include <random>
 #include <string>
@@ -46,17 +48,6 @@ bool SaveFigureFileAtomic(const std::filesystem::path& path, const FigureData& d
 
 namespace {
 
-uint16_t Crc16Ccitt(const uint8_t* data, size_t size, uint16_t crc) {
-  for (size_t i = 0; i < size; ++i) {
-    crc ^= static_cast<uint16_t>(data[i]) << 8;
-    for (int bit = 0; bit < 8; ++bit) {
-      crc = (crc & 0x8000) ? static_cast<uint16_t>((crc << 1) ^ 0x1021)
-                            : static_cast<uint16_t>(crc << 1);
-    }
-  }
-  return crc;
-}
-
 void WriteU16LE(FigureData& data, size_t offset, uint16_t value) {
   data[offset] = static_cast<uint8_t>(value & 0xFF);
   data[offset + 1] = static_cast<uint8_t>(value >> 8);
@@ -72,6 +63,11 @@ uint16_t ReadFigureVariant(const FigureData& data) {
   return static_cast<uint16_t>(data[0x1C] | (static_cast<uint16_t>(data[0x1D]) << 8));
 }
 
+bool HasValidHeaderCrc(const FigureData& data) {
+  const uint16_t stored = static_cast<uint16_t>(data[0x1E] | (data[0x1F] << 8));
+  return stored == FigureCrc16(data.data(), 0x1E);
+}
+
 FigureData CreateBlankFigure(uint16_t id, uint16_t variant, std::array<uint8_t, 4> serial) {
   FigureData data{};
   data[0] = serial[0];
@@ -84,7 +80,7 @@ FigureData CreateBlankFigure(uint16_t id, uint16_t variant, std::array<uint8_t, 
   data[7] = 0x0F;
   WriteU16LE(data, 0x10, id);
   WriteU16LE(data, 0x1C, variant);
-  const uint16_t crc = Crc16Ccitt(data.data(), 0x1E, 0xFFFF);
+  const uint16_t crc = FigureCrc16(data.data(), 0x1E);
   WriteU16LE(data, 0x1E, crc);
   // Little-endian bytes of the sector-trailer access-bit constants (0x690F0F0F for sector 0,
   // 0x69080F7F for sectors 1-15) -- these are raw memcpy'd bytes of a native uint32_t, not the

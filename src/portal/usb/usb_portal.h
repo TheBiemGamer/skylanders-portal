@@ -20,10 +20,10 @@ namespace skylanders::portal {
 // A small set of VID/PID pairs known to be a real Skylanders Portal of Power, matching Cemu's own
 // nsyshid whitelist for this device family (read for this fact only, not copied code).
 //
-// Only the Wii U portal (1430:0150) has actually been tested (docs/architecture.md, "Portal
-// layering"). The Xbox 360 portal (1430:1F17) is whitelisted on the same basis Cemu whitelists it,
-// but this project has no such hardware to verify against -- it may use a different report size or
-// need a different command mechanism than what was found for the Wii U portal.
+// Only the Wii U portal (1430:0150) has actually been tested. The Xbox 360 portal (1430:1F17) is
+// whitelisted on the same basis Cemu whitelists it, but this project has no such hardware to
+// verify against -- it may use a different report size or need a different command mechanism
+// than what was found for the Wii U portal.
 inline constexpr std::pair<uint16_t, uint16_t> kKnownPortals[] = {
     {0x1430, 0x0150},  // Wii U Skylanders portal -- tested, works
     {0x1430, 0x1F17},  // Xbox 360 Skylanders portal -- untested
@@ -31,7 +31,7 @@ inline constexpr std::pair<uint16_t, uint16_t> kKnownPortals[] = {
 
 // A real, physical Portal of Power, opened over USB HID via hidapi -- no WinUSB/Zadig driver
 // replacement needed; hid_send_output_report() reaches the device through the stock HID class
-// driver (docs/portal-protocol.md).
+// driver.
 //
 // Commands go out via hid_send_output_report() (a HID SET_REPORT control transfer) -- not
 // hid_write(), which prefers this device's interrupt OUT endpoint and is silently ignored by its
@@ -64,7 +64,6 @@ class UsbPortal final : public PortalDevice {
   //
   // Tracked per slot (0-15, matching kMaxFigures): a real portal can hold more than one figure at
   // once (Giants supports 2-player co-op plus items), so slot 0 alone is not the whole picture.
-  bool FigurePresent() const;                // true if any slot holds a figure
   std::vector<int> PresentSlots() const;      // every slot index that currently holds a figure
   std::optional<std::pair<uint16_t, uint16_t>> DetectedIdVariant(int slot) const;
   bool HadError() const { return write_error_logged_.load() || read_error_logged_.load(); }
@@ -73,10 +72,10 @@ class UsbPortal final : public PortalDevice {
   // happened that the device is very likely physically unplugged. IsOpen() alone can't tell this:
   // it only reflects whether hid_open() succeeded back at construction, not whether the device is
   // still there now -- a real disconnect leaves device_ non-null but every further hid call
-  // failing. Used by the hot-plug wrapper in portal_hook.cpp to decide when to retry.
+  // failing. Used by the hot-plug wrapper in portal_rex.cpp to decide when to retry.
   bool SeemsDisconnected() const { return consecutive_errors_.load() >= kDisconnectThreshold; }
 
-  // Best-effort full figure data for `slot`, built the same passive way as FigurePresent/
+  // Best-effort full figure data for `slot`, built the same passive way as PresentSlots/
   // DetectedIdVariant above -- assembled from whichever blocks the game's own polling has already
   // read, never by actively polling the device ourselves. Returns nullopt until every block
   // ParseFigureStats (figure_stats.h) needs (0x00, 0x01, 0x08, 0x0A, 0x0C) has been seen at least

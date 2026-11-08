@@ -1,5 +1,8 @@
 #include "portal/usb/usb_portal.h"
 
+#include "portal/figure_file.h"
+#include "portal/text.h"
+
 #include <algorithm>
 #include <chrono>
 #include <cstring>
@@ -18,18 +21,6 @@ std::string HidErrorUtf8(hid_device* device) {
   const wchar_t* message = hid_error(device);
   if (message == nullptr) return "(no error message)";
   return rex::string::to_utf8(std::u16string_view(reinterpret_cast<const char16_t*>(message)));
-}
-
-std::string HexBytes(const uint8_t* data, size_t n) {
-  static constexpr char kHex[] = "0123456789abcdef";
-  std::string out;
-  out.reserve(n * 3);
-  for (size_t i = 0; i < n; ++i) {
-    if (i) out += ' ';
-    out += kHex[data[i] >> 4];
-    out += kHex[data[i] & 0xF];
-  }
-  return out;
 }
 
 }  // namespace
@@ -75,7 +66,7 @@ Report UsbPortal::ReceiveRaw() {
   if (device_ == nullptr) return Report{};
   Report report{};
   // The game polls the read side "continuously (tens of times a second) regardless of whether a
-  // portal answers" (docs/portal-protocol.md), synchronously on whatever thread calls into the
+  // portal answers", synchronously on whatever thread calls into the
   // portal hook -- so every idle poll blocks that thread for however long this timeout is. 1ms is
   // enough for a real device's normal (low-single-digit-ms) reply latency, without making an idle
   // poll itself the bottleneck the way a 50ms timeout did; a genuinely dead device still returns
@@ -136,13 +127,6 @@ Report UsbPortal::Read() {
   return report;
 }
 
-bool UsbPortal::FigurePresent() const {
-  for (int slot = 0; slot < kMaxFigures; ++slot) {
-    if (slot_present_[slot].load()) return true;
-  }
-  return false;
-}
-
 std::vector<int> UsbPortal::PresentSlots() const {
   std::vector<int> slots;
   for (int slot = 0; slot < kMaxFigures; ++slot) {
@@ -161,7 +145,7 @@ void UsbPortal::ObserveReply(const Report& report) {
   // 'S' status frame: 0x53, then 4 bytes of little-endian slot state (2 bits each, slot 0
   // lowest -- up to kMaxFigures slots, matching a real portal holding more than one figure at
   // once, e.g. Giants' 2-player co-op plus items), a counter, and an active flag
-  // (docs/portal-protocol.md).
+  //
   if (report[0] == 0x53) {
     const uint32_t states = static_cast<uint32_t>(report[1]) | (static_cast<uint32_t>(report[2]) << 8) |
                             (static_cast<uint32_t>(report[3]) << 16) |
@@ -247,7 +231,9 @@ std::optional<FigureData> UsbPortal::DumpFigure(int slot, std::string* error) {
           }
           continue;
         }
-        if (reply[0] == 0x51 && (reply[1] & 0x10) != 0 && reply[2] == block) {
+        // Check the slot too: a reply to the game's own read of another slot can arrive here.
+        if (reply[0] == 0x51 && (reply[1] & 0x10) != 0 && (reply[1] & 0x0F) == slot &&
+            reply[2] == block) {
           matched = true;
           break;
         }
@@ -259,10 +245,12 @@ std::optional<FigureData> UsbPortal::DumpFigure(int slot, std::string* error) {
       }
       std::copy_n(reply.begin() + 3, kBlockSize, data.begin() + block * kBlockSize);
     }
+    // Inside the lock, so a game write can't arrive while the slot still counts as dumping.
+    dumping_slot_.store(-1);
   }
-  dumping_slot_.store(-1);
 
   if (!ok) return Fail("the figure was removed or stopped responding during the dump");
+  if (!HasValidHeaderCrc(data)) return Fail("the dump came back corrupted; try again");
   return data;
 }
 

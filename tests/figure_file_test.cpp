@@ -112,6 +112,19 @@ int main() {
     CHECK(ReadFigureVariant(d) == 0x1602);
   }
 
+  // HasValidHeaderCrc: a blank figure passes; one changed byte in block 0 or the CRC fails it.
+  {
+    FigureData d = CreateBlankFigure(112, 0, {0x11, 0x22, 0x33, 0x44});
+    CHECK(HasValidHeaderCrc(d));
+    FigureData bad_id = d;
+    bad_id[0x10] ^= 0x01;
+    CHECK(!HasValidHeaderCrc(bad_id));
+    FigureData bad_crc = d;
+    bad_crc[0x1F] ^= 0x01;
+    CHECK(!HasValidHeaderCrc(bad_crc));
+    CHECK(!HasValidHeaderCrc(FigureData{}));
+  }
+
   // CreateBlankFigure (fixed-serial overload) produces the exact byte layout from the design spec.
   {
     FigureData d = CreateBlankFigure(112, 0, {0x11, 0x22, 0x33, 0x44});

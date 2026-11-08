@@ -25,9 +25,13 @@ bool SaveFigureFileAtomic(const std::filesystem::path& path, const FigureData& d
 uint16_t ReadFigureId(const FigureData& data);
 uint16_t ReadFigureVariant(const FigureData& data);
 
+// True when block 0's CRC (little-endian uint16 at 0x1E, over bytes 0x00-0x1D) matches. Every real
+// figure has it; a mismatch means the header was read wrong, and the file would not load.
+bool HasValidHeaderCrc(const FigureData& data);
+
 // Builds a blank, valid figure for `id`/`variant`: correct manufacturer bytes, id, variant, CRC,
-// and Mifare sector-trailer access bits (see docs/architecture.md, "Figures"). The 4-byte serial is normally
-// random; the explicit-serial overload exists so callers (tests) can get a deterministic result.
+// and Mifare sector-trailer access bits. The 4-byte serial is normally random; the explicit-serial
+// overload exists so callers (tests) can get a deterministic result.
 FigureData CreateBlankFigure(uint16_t id, uint16_t variant);
 FigureData CreateBlankFigure(uint16_t id, uint16_t variant, std::array<uint8_t, 4> serial);
 
