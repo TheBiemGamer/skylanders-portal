@@ -60,6 +60,8 @@ if(TARGET rex::runtime)
         src/portal_rex/portal_rex.cpp
         src/portal_rex/portal_overlay_dialog.cpp
         src/portal/usb/usb_portal.cpp
+        src/portal/usb/xbox360_portal.cpp
+        src/portal/usb/winusb_portal_io.cpp
         src/portal_rex/sdl_audio_sink.cpp
     )
     target_include_directories(skylanders_portal_rex PUBLIC src)

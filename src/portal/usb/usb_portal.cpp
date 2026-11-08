@@ -1,5 +1,7 @@
 #include "portal/usb/usb_portal.h"
 
+#include "portal/usb/winusb_portal_io.h"
+
 #include "portal/figure_file.h"
 #include "portal/text.h"
 
@@ -95,6 +97,18 @@ UsbPortal::UsbPortal() : traffic_("usb", [](const std::string& line) { REXLOG_IN
       break;
     }
   }
+  // No HID portal: a PS3 / Wii / Wii U one may have the WinUSB driver instead (Zadig, for Dolphin's or
+  // Cemu's passthrough; Device Manager calls it "Spyro Porta" then, Core of Light #58).
+  if (device_ == nullptr) {
+    auto io = std::make_unique<WinUsbPortalIo>(0x0150);
+    if (io->IsOpen()) {
+      winusb_ = std::move(io);
+      vendor_id_ = 0x1430;
+      product_id_ = 0x0150;
+      REXLOG_INFO("Portal (usb): opened 1430:0150 on WinUSB");
+      return;
+    }
+  }
   // Which portal was opened, or, when none, every HID device of the portals' maker (vendor 1430)
   // Windows shows: tells an untested model or a portal that isn't a HID device (an Xbox 360 one on
   // the Xbox controller driver, TrapTeamRecomp #19) from no portal at all.
@@ -122,6 +136,20 @@ UsbPortal::~UsbPortal() {
 }
 
 void UsbPortal::SendRaw(const Report& report) {
+  if (winusb_) {
+    const bool ok = winusb_->SetReport(report.data(), report.size());
+    if (raw_writes_logged_.fetch_add(1) < kRawLogCount) {
+      REXLOG_INFO("Portal (usb): 1430:0150 (WinUSB) command -> {} ({})", HexBytes(report.data(), 8),
+                  ok ? "taken" : "not taken");
+    }
+    if (ok) {
+      consecutive_errors_.store(0);
+    } else {
+      consecutive_errors_.fetch_add(1);
+      if (!write_error_logged_.exchange(true)) REXLOG_WARN("Portal (usb): WinUSB command failed");
+    }
+    return;
+  }
   if (device_ == nullptr) return;
   // hid_send_output_report() sends via a HID SET_REPORT control transfer -- unlike hid_write(),
   // which prefers this device's interrupt OUT endpoint and is accepted at the transport level but
@@ -145,8 +173,27 @@ void UsbPortal::SendRaw(const Report& report) {
 }
 
 Report UsbPortal::ReceiveRaw() {
-  if (device_ == nullptr) return Report{};
+  if (device_ == nullptr && !winusb_) return Report{};
   Report report{};
+  if (winusb_) {
+    // Answers come from WinUsbPortalIo's reader thread; none queued is an idle poll, as a 0 from
+    // hid_read_timeout below. -1: reading failed, the portal is very likely unplugged.
+    const int got = winusb_->Read(report.data(), report.size());
+    if (got < 0) {
+      consecutive_errors_.fetch_add(1);
+      return Report{};
+    }
+    consecutive_errors_.store(0);
+    if (got == 0) return Report{};
+    if (raw_reads_logged_.fetch_add(1) < kRawLogCount) {
+      REXLOG_INFO("Portal (usb): 1430:0150 (WinUSB) reply <- {}", HexBytes(report.data(), 16));
+    }
+    if (report[0] == 0x52 && report[1] == 0x01) {  // an old portal's ready reply, as below
+      report[1] = 0x02;
+      report[2] = 0x1B;
+    }
+    return report;
+  }
   // The game polls the read side "continuously (tens of times a second) regardless of whether a
   // portal answers", synchronously on whatever thread calls into the
   // portal hook -- so every idle poll blocks that thread for however long this timeout is. 1ms is
@@ -188,7 +235,7 @@ void UsbPortal::Write(const Report& report) {
   // A dump in progress owns the device exclusively; the game's own writes are dropped rather than
   // reaching real hardware (see DumpFigure's comment).
   if (dumping_slot_.load() >= 0) return;
-  if (device_ != nullptr) traffic_.OnCommand(report);
+  if (IsOpen()) traffic_.OnCommand(report);
   if (report[0] == 0x57) {  // 'W': write one figure block -- log for offset research.
     const int slot = report[1] & 0x0F;
     const int block = report[2];
@@ -340,7 +387,7 @@ std::optional<FigureData> UsbPortal::DumpFigure(int slot, std::string* error) {
     return std::nullopt;
   };
   if (slot < 0 || slot >= kMaxFigures) return Fail("invalid slot");
-  if (device_ == nullptr) return Fail("no USB portal open");
+  if (!IsOpen()) return Fail("no USB portal open");
   if (!slot_present_[slot].load()) return Fail("no figure in that slot");
 
   dumping_slot_.store(slot);
@@ -411,7 +458,7 @@ std::optional<FigureData> UsbPortal::CachedFigureData(int slot) const {
 }
 
 void UsbPortal::WriteAudio(std::span<const int16_t> pcm) {
-  if (!device_) return;
+  if (!IsOpen()) return;
   std::call_once(audio_thread_started_,
                  [this] { audio_thread_ = std::thread([this] { AudioWriterLoop(); }); });
   // Never blocks the game thread: full packets go to the writer thread's bounded queue.
@@ -432,7 +479,9 @@ void UsbPortal::AudioWriterLoop() {
     uint8_t out[1 + kAudioPacketSize];
     out[0] = 0;  // report ID
     std::memcpy(out + 1, packet->data(), kAudioPacketSize);
-    if (hid_write(device_, out, sizeof(out)) < 0) REXLOG_WARN("Portal: speaker audio write failed");
+    const bool ok = winusb_ ? winusb_->WriteInterrupt(packet->data(), kAudioPacketSize)
+                            : hid_write(device_, out, sizeof(out)) >= 0;
+    if (!ok) REXLOG_WARN("Portal: speaker audio write failed");
   }
 }
 
