@@ -10,12 +10,17 @@
 #include <utility>
 #include <vector>
 
+#include <memory>
+
 #include <hidapi.h>
 
 #include "portal/audio.h"
 #include "portal/portal_device.h"
+#include "portal/traffic_log.h"
 
 namespace skylanders::portal {
+
+class WinUsbPortalIo;
 
 // A small set of VID/PID pairs known to be a real Skylanders Portal of Power, matching Cemu's own
 // nsyshid whitelist for this device family (read for this fact only, not copied code).
@@ -40,15 +45,16 @@ inline constexpr std::pair<uint16_t, uint16_t> kKnownPortals[] = {
 class UsbPortal final : public PortalDevice {
  public:
   // Opens the first connected device matching kKnownPortals, in the order listed. Check IsOpen()
-  // before installing this as the active portal -- construction never throws or logs; the caller
-  // decides what to do if no matching device was found.
+  // before installing this as the active portal -- construction never throws; it logs
+  // which portal it opened, or the vendor's HID devices when none. The caller decides what to do
+  // if no matching device was found.
   UsbPortal();
   ~UsbPortal() override;
 
   UsbPortal(const UsbPortal&) = delete;
   UsbPortal& operator=(const UsbPortal&) = delete;
 
-  bool IsOpen() const { return device_ != nullptr; }
+  bool IsOpen() const { return device_ != nullptr || winusb_ != nullptr; }
 
   void Write(const Report& report) override;
   Report Read() override;
@@ -107,8 +113,20 @@ class UsbPortal final : public PortalDevice {
   Report ReceiveRaw();                 // unlocked -- callers hold io_mutex_
 
   std::mutex io_mutex_;  // serializes every raw HID transfer: Write(), Read(), DumpFigure()
+  // The game's commands and what it got back, in plain lines for a player's log (traffic_log.h).
+  PortalTrafficLog traffic_;
 
   hid_device* device_ = nullptr;
+  // Instead of device_: a 1430:0150 portal on the WinUSB driver (Zadig, for Dolphin or Cemu; Core of
+  // Light #58), which hidapi can't open. Same reports, see winusb_portal_io.h.
+  std::unique_ptr<WinUsbPortalIo> winusb_;
+  uint16_t vendor_id_ = 0;   // of the opened device, for the log
+  uint16_t product_id_ = 0;
+  // The first few raw commands and replies go to the log (TrapTeamRecomp #19: an Xbox 360
+  // Traptanium portal came up as "incompatible"; the Xbox 360 portals were never tested here).
+  static constexpr int kRawLogCount = 6;
+  std::atomic<int> raw_writes_logged_{0};
+  std::atomic<int> raw_reads_logged_{0};
   std::atomic<bool> write_error_logged_{false};
   std::atomic<bool> read_error_logged_{false};
   static constexpr int kDisconnectThreshold = 5;
