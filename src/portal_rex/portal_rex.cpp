@@ -7,6 +7,7 @@
 #include <chrono>
 #include <cstdint>
 #include <filesystem>
+#include <map>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -229,6 +230,32 @@ class UsbHotPlugPortal final : public skylanders::portal::PortalDevice {
   std::chrono::steady_clock::time_point last_attempt_{};
 };
 
+// Keeps a copy of a figure file before the game first saves over it in this run, and again when the
+// last copy is 30 minutes old (the game writes several blocks a second while it plays, a copy each
+// time would be far too many): Backups\Figures next to the figures folder in use, the newest
+// portal::kFigureBackups per figure (portal/figure_file.h).
+void BackUpBeforeFirstSave(const std::filesystem::path& file) {
+  static std::mutex mutex;
+  static std::map<std::filesystem::path, std::chrono::steady_clock::time_point> last_copy;
+  const auto now = std::chrono::steady_clock::now();
+  {
+    std::lock_guard<std::mutex> lock(mutex);
+    auto it = last_copy.find(file);
+    if (it != last_copy.end() && now - it->second < std::chrono::minutes(30)) return;
+    last_copy[file] = now;
+  }
+  // The figures folder in use (InstallPortal always sets it): the data folder's Figures normally,
+  // a scripted run's own copy in a test, so a test never writes into the owner's data folder.
+  const std::filesystem::path dir =
+      skylanders::portal::FigureBackupDir(file, skylanders::Utf8ToPath(REXCVAR_GET(portal_figures_dir)));
+  const std::filesystem::path copy = skylanders::portal::BackUpFigureFile(file, dir);
+  if (copy.empty()) {
+    REXLOG_WARN("Portal: could not back up a figure file before saving it");
+  } else {
+    REXLOG_INFO("Portal: backed up a figure file before saving it (Backups\\Figures)");
+  }
+}
+
 // Builds a ready-to-use SoftwarePortal, wired the same way regardless of whether this is the
 // startup portal or a live switch back into software mode from the settings (F4).
 skylanders::portal::SoftwarePortal* SetUpSoftwarePortal() {
@@ -239,6 +266,7 @@ skylanders::portal::SoftwarePortal* SetUpSoftwarePortal() {
   software->SetWriteCallback([](int slot, const skylanders::portal::FigureData& data,
                                 const std::optional<std::filesystem::path>& source) {
     if (!source) return;  // this slot's figure did not come from a file
+    BackUpBeforeFirstSave(*source);
     const bool saved = skylanders::portal::SaveFigureFileAtomic(*source, data);
     std::lock_guard<std::mutex> lock(g_save_error_mutex);
     if (saved) {
